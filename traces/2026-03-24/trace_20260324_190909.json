@@ -1,0 +1,135 @@
+{
+  "date": "2026-03-24",
+  "market": "a_share",
+  "decision_type": "weekly_report",
+  "analysis_approach": "qualitative_analysis",
+  "macro_context": {
+    "geopolitical_risk": "high",
+    "energy_prices": "rising",
+    "inflation_pressure": "increasing",
+    "domestic_policy": "tech_independence_supportive"
+  },
+  "quadrant_distribution": {
+    "golden_zone": [
+      "半导体",
+      "机器人/人工智能",
+      "国防军工"
+    ],
+    "leftside_zone": [
+      "有色金属",
+      "机械设备",
+      "家用电器"
+    ],
+    "danger_zone": [
+      "电力设备",
+      "纺织服饰"
+    ],
+    "garbage_zone": [
+      "传统周期行业"
+    ]
+  },
+  "observation_pool_alignment": {
+    "export_chain": [
+      "家用电器",
+      "机械设备",
+      "有色金属",
+      "汽车"
+    ],
+    "policy_chain": [
+      "汽车",
+      "家用电器",
+      "机械设备",
+      "电子",
+      "国防军工",
+      "计算机"
+    ],
+    "defensive_core": [
+      "公用事业",
+      "银行",
+      "建筑装饰"
+    ]
+  },
+  "veto_applied": [
+    {
+      "industry": "纺织服饰",
+      "veto_code": "VETO_001",
+      "reason": "高度依赖美国市场，关税政策不确定性"
+    },
+    {
+      "industry": "电力设备",
+      "veto_code": "VETO_002",
+      "reason": "产能过剩问题尚未完全解决"
+    }
+  ],
+  "etf_portfolio": {
+    "allocation_structure": "4-4-2",
+    "aggressive_layer": [
+      {
+        "industry": "半导体",
+        "etf_example": "512480或类似",
+        "weight": "15%",
+        "rationale": "政策支持+资金持续流入+技术突破催化"
+      },
+      {
+        "industry": "机器人/人工智能",
+        "etf_example": "159819或类似",
+        "weight": "15%",
+        "rationale": "产业趋势明确，ETF增量资金明显"
+      },
+      {
+        "industry": "国防军工",
+        "etf_example": "512560或类似",
+        "weight": "10%",
+        "rationale": "地缘风险升温，防御+进攻双重属性"
+      }
+    ],
+    "configuration_layer": [
+      {
+        "industry": "有色金属",
+        "etf_example": "512400或类似",
+        "weight": "15%",
+        "rationale": "制造业复苏受益，全球资源品价值重估"
+      },
+      {
+        "industry": "机械设备",
+        "etf_example": "515290或类似",
+        "weight": "15%",
+        "rationale": "出口链+国产替代逻辑，估值相对合理"
+      },
+      {
+        "industry": "家用电器",
+        "etf_example": "159996或类似",
+        "weight": "10%",
+        "rationale": "内需改善预期，消费升级逻辑"
+      }
+    ],
+    "defensive_layer": [
+      {
+        "industry": "红利低波",
+        "etf_example": "515300或类似",
+        "weight": "10%",
+        "rationale": "震荡市中提供稳定现金流"
+      },
+      {
+        "industry": "现金/货币基金",
+        "weight": "10%",
+        "rationale": "保持流动性，应对市场不确定性"
+      }
+    ]
+  },
+  "risk_controls": {
+    "single_etf_cap": "15%",
+    "cash_reserve": "10%",
+    "sector_concentration_limits": "严格遵循负面清单",
+    "geopolitical_risk_monitoring": "重点关注中东局势变化"
+  },
+  "news_validation": {
+    "tech_growth_flows": "确认半导体、机器人板块资金持续流入",
+    "geopolitical_events": "中东局势紧张，能源价格上涨",
+    "etf_creation": "科创ETF密集申报，科技股迎来增量资金"
+  },
+  "limitations": "由于数据接口暂时无法获取实时因子计算，本报告基于定性分析、宏观环境判断和已有配置框架生成。建议在数据接口恢复后进行量化验证。",
+  "timestamp": "2026-03-24",
+  "saved_at": "2026-03-24T19:09:09.196198",
+  "approval_status": "pending"
+}
