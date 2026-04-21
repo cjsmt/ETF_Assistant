@@ -28,7 +28,7 @@ def _save_agent_response(content: str):
 def main():
     parser = argparse.ArgumentParser(description="AI Quant Assistant for ETF Rotation Strategies")
     parser.add_argument("--query", type=str, default=None, help="Single query to run")
-    parser.add_argument("--report", action="store_true", help="从最新 trace 生成周报 Markdown")
+    parser.add_argument("--report", action="store_true", help="从最新 trace 生成周报文件（HTML/DOCX/PDF）")
     parser.add_argument("--market", type=str, default="a_share", choices=["a_share", "hk", "us"])
     parser.add_argument("--role", type=str, default="researcher", choices=["researcher", "rm", "compliance"])
     parser.add_argument("--model", type=str, default=None, help="LLM model name (default: env OPENAI_MODEL or deepseek-v3.2)")

@@ -17,6 +17,11 @@ MAX_RETRIES = 3
 RETRY_BASE_WAIT = 3  # 首次重试等待秒数，后续指数退避
 
 
+def _is_permission_denied_error(exc: Exception) -> bool:
+    err_str = str(exc)
+    return "没有接口" in err_str or "无权限" in err_str or "访问权限" in err_str
+
+
 def _to_ts_date(s: str) -> str:
     """YYYY-MM-DD -> YYYYMMDD"""
     return s.replace("-", "")
@@ -66,6 +71,14 @@ class TushareProvider(BaseDataProvider):
         if api_url:
             self._pro._DataApi__token = token
             self._pro._DataApi__http_url = api_url.rstrip("/")
+        self._akshare_fallback = None
+
+    def _get_akshare_fallback(self):
+        if self._akshare_fallback is None:
+            from .akshare_provider import AKShareProvider
+
+            self._akshare_fallback = AKShareProvider()
+        return self._akshare_fallback
 
     def get_industry_index_daily(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """申万行业指数需用 sw_daily，index_daily 不包含申万。"""
@@ -113,6 +126,9 @@ class TushareProvider(BaseDataProvider):
             df["turnover"] = df["turnover"] * 1000  # 千元 -> 元
             return df[["date", "open", "high", "low", "close", "volume", "turnover"]]
         except Exception as e:
+            if _is_permission_denied_error(e):
+                print(f"[TushareProvider] fund_daily({ts_code}) 无权限，回退 AKShare")
+                return self._get_akshare_fallback().get_etf_daily(code, start_date, end_date)
             print(f"[TushareProvider] fund_daily({ts_code}) 最终失败: {e}")
             return pd.DataFrame()
 
@@ -164,6 +180,9 @@ class TushareProvider(BaseDataProvider):
                 except Exception:
                     pass
             except Exception as e:
+                if _is_permission_denied_error(e):
+                    print(f"[TushareProvider] get_etf_info({code}) fund_daily 无权限，批量回退 AKShare")
+                    return self._get_akshare_fallback().get_etf_info_batch(codes)
                 print(f"[TushareProvider] get_etf_info({code}) 失败: {e}")
             result[code] = {
                 "code": code,

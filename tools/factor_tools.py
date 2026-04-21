@@ -5,19 +5,16 @@ import yaml
 import pandas as pd
 from langchain_core.tools import tool
 
+from .data_tools import _get_provider, _load_market_config
+
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
 
 def _get_factor_provider(market: str):
-    from .data_tools import _load_market_config, _get_provider
     cfg = _load_market_config(market)
     return _get_provider(cfg)
 
 def _load_factor_params() -> dict:
     with open(os.path.join(CONFIG_DIR, "factor_params.yaml"), "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-def _load_market_config(market: str) -> dict:
-    with open(os.path.join(CONFIG_DIR, f"market_{market}.yaml"), "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 def _calc_ma_score(close: pd.Series, short_p: int, mid_p: int, long_p: int) -> int:

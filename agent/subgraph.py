@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Any, Callable, Literal
 
@@ -104,12 +105,109 @@ def _extract_keywords(text: str, max_keywords: int = 3) -> list[str]:
     return unique_keywords
 
 
+def _split_items(raw: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[，,；;、/\n]+", raw or "") if item.strip()]
+
+
+def _extract_code(text: str) -> str:
+    match = re.search(r"\b(\d{6})\b", text or "")
+    return match.group(1) if match else "-"
+
+
+def _parse_overlay_text(overlay_text: str) -> tuple[dict[str, list[str]], list[str]]:
+    observation_pool = {"export_chain": [], "policy_chain": [], "defensive": []}
+    veto_list: list[str] = []
+    current_section = ""
+    active_veto = False
+
+    for raw_line in overlay_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith("[") and line.endswith("]"):
+            label = line[1:-1]
+            if "出口" in label:
+                current_section = "export_chain"
+                active_veto = False
+            elif "政策" in label:
+                current_section = "policy_chain"
+                active_veto = False
+            elif "防守" in label or "防御" in label:
+                current_section = "defensive"
+                active_veto = False
+            else:
+                current_section = ""
+                active_veto = "(ACTIVE)" in label
+            continue
+
+        if line.startswith("Industries:"):
+            industries = _split_items(line.split(":", 1)[1])
+            if current_section:
+                observation_pool[current_section].extend(industries)
+            elif active_veto:
+                veto_list.extend(industries)
+
+    for key, values in observation_pool.items():
+        observation_pool[key] = list(dict.fromkeys(values))
+    veto_list = list(dict.fromkeys(veto_list))
+    return observation_pool, veto_list
+
+
+def _parse_mapping_text(
+    mapping_text: str,
+    offensive_industries: list[str] | None = None,
+    allocation_industries: list[str] | None = None,
+) -> dict[str, list[dict[str, str]]]:
+    offensive_set = set(offensive_industries or [])
+    allocation_set = set(allocation_industries or [])
+    portfolio = {"offensive_layer": [], "allocation_layer": [], "defensive_layer": []}
+
+    for raw_line in mapping_text.splitlines():
+        line = raw_line.strip()
+        if not line or " -> " not in line:
+            continue
+
+        sector, remainder = line.split(" -> ", 1)
+        status_match = re.search(r"\[(PASS|FAIL)\]", remainder)
+        detail_match = re.search(r"\(([^()]*)\)(?:\s+\|\s+Alternatives:.*)?$", remainder)
+        etf_text = remainder[: status_match.start()].strip() if status_match else remainder.strip()
+        rationale_parts = []
+        if status_match:
+            rationale_parts.append(f"流动性筛选 {status_match.group(1)}")
+        if detail_match:
+            rationale_parts.append(detail_match.group(1).strip())
+
+        row = {
+            "sector": sector.strip(),
+            "weight": "-",
+            "etf": etf_text or "待确认",
+            "code": _extract_code(etf_text),
+            "rationale": "；".join(part for part in rationale_parts if part) or "ETF 映射结果",
+        }
+
+        if row["sector"] in offensive_set:
+            portfolio["offensive_layer"].append(row)
+        elif row["sector"] in allocation_set:
+            portfolio["allocation_layer"].append(row)
+        else:
+            portfolio["allocation_layer"].append(row)
+
+    return portfolio
+
+
 def _summarize_quadrants(quadrant_df) -> tuple[dict[str, list[str]], str]:
+    quadrant_key_map = {
+        "黄金配置区": "golden_zone",
+        "左侧观察区": "left_side_zone",
+        "高危警示区": "high_risk_zone",
+        "垃圾规避区": "garbage_zone",
+    }
     quadrant_distribution: dict[str, list[str]] = {}
     summary_lines = []
     for label in QUADRANT_ORDER:
         items = quadrant_df[quadrant_df["quadrant"] == label]["industry"].tolist()
-        quadrant_distribution[label] = items
+        quadrant_distribution[quadrant_key_map[label]] = items
         preview = "、".join(items[:8]) if items else "无"
         summary_lines.append(f"- {label}（{len(items)}）：{preview}")
     return quadrant_distribution, "\n".join(summary_lines)
@@ -154,6 +252,8 @@ def weekly_prepare_node(state: AgentState):
     preferred_industries = quadrant_df[
         quadrant_df["quadrant"].isin(["黄金配置区", "左侧观察区"])
     ]["industry"].head(6).tolist()
+    offensive_industries = quadrant_df[quadrant_df["quadrant"] == "黄金配置区"]["industry"].head(3).tolist()
+    allocation_industries = quadrant_df[quadrant_df["quadrant"] == "左侧观察区"]["industry"].head(3).tolist()
     etf_mapping_text = (
         _safe_invoke_tool(
             map_etf,
@@ -162,14 +262,21 @@ def weekly_prepare_node(state: AgentState):
         if preferred_industries
         else "无可映射行业。"
     )
+    observation_pool, veto_list = _parse_overlay_text(overlay_text)
+    portfolio_recommendation = _parse_mapping_text(
+        etf_mapping_text,
+        offensive_industries=offensive_industries,
+        allocation_industries=allocation_industries,
+    )
 
     payload = {
         "decision_date": end_date,
         "market": market,
         "data_period": f"{start_date} to {end_date}",
         "quadrant_distribution": quadrant_distribution,
-        "observation_pool_filter": overlay_text,
-        "portfolio_recommendation": etf_mapping_text,
+        "observation_pool_filter": observation_pool,
+        "veto_list_exclusions": veto_list,
+        "portfolio_recommendation": portfolio_recommendation,
         "factor_summary": factor_summary,
         "config_version": "fixed-workflow-v1",
         "timestamp": end_date,
@@ -424,7 +531,7 @@ def rm_portfolio_persist_node(state: AgentState):
     trace = {
         "decision_date": _today(),
         "market": payload.get("market", state.get("market", "a_share")),
-        "portfolio_recommendation": payload.get("mapped", ""),
+        "portfolio_recommendation": _parse_mapping_text(payload.get("mapped", ""), allocation_industries=payload.get("industries", [])),
         "risk_level": payload.get("risk_level", "未提供"),
         "industries": payload.get("industries", []),
         "config_version": "fixed-workflow-v1",

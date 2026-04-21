@@ -1,44 +1,28 @@
 """
-从 trace + Agent 回复 生成带图、表、分析、信息架构的 HTML 周报。
+从 trace + Agent 回复生成带图、表、分析、信息架构的 HTML 周报。
 支持导出为 HTML、Word(.docx)、PDF。
 用法: python scripts/generate_report_html.py [trace路径] [--format html|docx|pdf|all]
 """
 import argparse
 import base64
 import io
-import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timedelta
 from html import escape
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from scripts.report_data import build_report_data, load_agent_response, load_trace
+
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TRACE_DIR = os.path.join(PROJECT_ROOT, "traces")
-
-
-def _last_week_range(d: datetime) -> str:
-    """报告周 = 上周（已完成周），格式：2026年第9周 (2月24日-3月2日)"""
-    # 上周一
-    last_monday = d - timedelta(days=d.weekday() + 7)
-    last_sunday = last_monday + timedelta(days=6)
-    iso = last_monday.isocalendar()
-    return f"{last_monday.year}年第{iso[1]}周 ({last_monday.month}月{last_monday.day}日-{last_sunday.month}月{last_sunday.day}日)"
-
-
-def _load_agent_response(trace_dir: str) -> str:
-    """加载同目录下的 agent_response.txt"""
-    path = os.path.join(trace_dir, "agent_response.txt")
-    if os.path.isfile(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    return "（无 Agent 回复记录）"
 
 
 def _fig_to_base64(fig) -> str:
@@ -48,104 +32,101 @@ def _fig_to_base64(fig) -> str:
     return base64.b64encode(buf.read()).decode("utf-8")
 
 
-def _make_quadrant_chart(trace: dict) -> str:
-    """四象限行业数量柱状图"""
-    qd = trace.get("quadrant_distribution", {})
-    pr = trace.get("portfolio_recommendation", {})
-    golden = qd.get("golden_zone") or [x["sector"] for x in pr.get("offensive_layer", [])]
-    left = qd.get("left_side_zone") or [x["sector"] for x in pr.get("allocation_layer", [])]
-    danger = qd.get("high_risk_zone", qd.get("danger_zone", []))
-    garbage = qd.get("garbage_zone", [])
+def _to_float_weight(value) -> float:
+    try:
+        return float(str(value).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
 
+
+def _make_quadrant_chart(data: dict) -> str:
+    """四象限行业数量柱状图"""
+    quadrant = data.get("quadrant", {})
     labels = ["黄金配置区", "左侧观察区", "高危警示区", "垃圾规避区"]
-    counts = [len(golden), len(left), len(danger), len(garbage)]
+    counts = [
+        len(quadrant.get("golden", [])),
+        len(quadrant.get("left", [])),
+        len(quadrant.get("danger", [])),
+        len(quadrant.get("garbage", [])),
+    ]
     colors = ["#2ecc71", "#3498db", "#f39c12", "#e74c3c"]
 
     fig, ax = plt.subplots(figsize=(8, 4))
     bars = ax.bar(labels, counts, color=colors, edgecolor="white", linewidth=1.2)
     ax.set_ylabel("行业数量")
     ax.set_title("四象限行业分布")
-    for b in bars:
-        ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 0.2, str(int(b.get_height())), ha="center", fontsize=11)
+    for bar in bars:
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.2,
+            str(int(bar.get_height())),
+            ha="center",
+            fontsize=11,
+        )
     plt.tight_layout()
-    s = _fig_to_base64(fig)
+    encoded = _fig_to_base64(fig)
     plt.close()
-    return s
+    return encoded
 
 
-def _make_weights_pie(trace: dict) -> str:
+def _make_weights_pie(data: dict) -> str:
     """组合权重饼图"""
-    pr = trace.get("portfolio_recommendation", {})
     items = []
-    for layer in [pr.get("offensive_layer", []), pr.get("allocation_layer", []), pr.get("defensive_layer", [])]:
-        for x in layer:
-            w = str(x.get("weight", "0")).replace("%", "")
-            try:
-                items.append((x.get("sector", ""), float(w)))
-            except ValueError:
-                pass
+    for row in data.get("etf_rows", []):
+        weight = _to_float_weight(row.get("weight"))
+        if weight > 0:
+            items.append((row.get("sector", ""), weight))
+
+    cash_weight = _to_float_weight(data.get("cash_reserve", "0"))
+    if cash_weight > 0:
+        items.append(("现金", cash_weight))
 
     if not items:
         fig, ax = plt.subplots(figsize=(5, 5))
         ax.text(0.5, 0.5, "无数据", ha="center", va="center", fontsize=14)
-        s = _fig_to_base64(fig)
+        encoded = _fig_to_base64(fig)
         plt.close()
-        return s
+        return encoded
 
-    labels = [x[0] for x in items]
-    sizes = [x[1] for x in items]
+    labels = [item[0] for item in items]
+    sizes = [item[1] for item in items]
     colors = plt.cm.Set3([i / max(len(sizes), 1) for i in range(len(sizes))])
 
     fig, ax = plt.subplots(figsize=(7, 7))
     ax.pie(sizes, labels=labels, autopct="%1.0f%%", colors=colors, startangle=90)
     ax.set_title("ETF 组合权重")
     plt.tight_layout()
-    s = _fig_to_base64(fig)
+    encoded = _fig_to_base64(fig)
     plt.close()
-    return s
+    return encoded
 
 
-def _build_html(trace: dict, agent_response: str, chart_quadrant: str, chart_pie: str) -> str:
-    qd = trace.get("quadrant_distribution", {})
-    pr = trace.get("portfolio_recommendation", {})
-    risk = trace.get("risk_checks", {})
-    obs = trace.get("observation_pool_filter", {})
-    news = trace.get("news_validation", {})
-    veto = trace.get("veto_list_exclusions", [])
+def _build_html(data: dict, agent_response: str, chart_quadrant: str, chart_pie: str) -> str:
+    risk = data.get("risk_checks", {})
+    obs = data.get("observation_pool", {})
+    news = data.get("news_validation", {})
+    veto = data.get("veto_list", [])
+    etf_rows = data.get("etf_rows", [])
 
-    golden = qd.get("golden_zone") or [x["sector"] for x in pr.get("offensive_layer", [])]
-    left = qd.get("left_side_zone") or [x["sector"] for x in pr.get("allocation_layer", [])]
-    danger = qd.get("high_risk_zone", qd.get("danger_zone", []))
-    garbage = qd.get("garbage_zone", [])
-
-    decision_date = trace.get("decision_date", trace.get("timestamp", datetime.now().strftime("%Y-%m-%d")))
-    try:
-        dt = datetime.strptime(decision_date, "%Y-%m-%d")
-    except Exception:
-        dt = datetime.now()
-    report_week = _last_week_range(dt)
-
-    # ETF 表格行
-    etf_rows = []
-    for layer in [pr.get("offensive_layer", []), pr.get("allocation_layer", []), pr.get("defensive_layer", [])]:
-        for item in layer:
-            if item.get("sector") == "现金":
-                continue
-            etf = item.get("etf", "待确认")
-            code = etf[:6] if etf and etf != "待确认" and len(etf) >= 6 else "-"
-            etf_rows.append(f"<tr><td>{escape(item.get('sector',''))}</td><td>{escape(str(code))}</td><td>{escape(str(item.get('weight','-')))}</td><td>{escape(str(item.get('rationale','-')))}</td></tr>")
-
-    # 新闻验证
     news_html = "".join(f"<li>{escape(k)}：{escape(str(v))}</li>" for k, v in (news or {}).items()) or "<li>无</li>"
     risk_macro = "".join(f"<li>{escape(r)}</li>" for r in risk.get("macro_risks", []))
     risk_sector = "".join(f"<li>{escape(r)}</li>" for r in risk.get("sector_risks", []))
+    etf_rows_html = "".join(
+        (
+            f"<tr><td>{escape(row.get('sector', ''))}</td>"
+            f"<td>{escape(str(row.get('code', '-')))}</td>"
+            f"<td>{escape(str(row.get('weight', '-')))}</td>"
+            f"<td>{escape(str(row.get('rationale', '-')))}</td></tr>"
+        )
+        for row in etf_rows
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ETF 行业轮动周报 · {escape(report_week)}</title>
+<title>ETF 行业轮动周报 · {escape(data.get('report_week', 'N/A'))}</title>
 <style>
 *{{box-sizing:border-box}}
 body{{font-family:'Microsoft YaHei',sans-serif;margin:0;padding:24px;background:#f5f6fa;color:#2c3e50;line-height:1.6}}
@@ -174,11 +155,11 @@ tr:nth-child(even){{background:#f8f9fa}}
 <h1>📊 ETF 行业轮动周报</h1>
 
 <div class="meta">
-<strong>报告周</strong>：{escape(report_week)} &nbsp;|&nbsp;
-<strong>报告日期</strong>：{escape(decision_date)} &nbsp;|&nbsp;
-<strong>信号截止</strong>：{escape(decision_date)} &nbsp;|&nbsp;
-<strong>因子计算区间</strong>：{escape(trace.get('data_period','-'))} &nbsp;|&nbsp;
-<strong>配置版本</strong>：{escape(str(trace.get('config_version','N/A')))}
+<strong>报告周</strong>：{escape(data.get('report_week', 'N/A'))} &nbsp;|&nbsp;
+<strong>报告日期</strong>：{escape(data.get('decision_date', 'N/A'))} &nbsp;|&nbsp;
+<strong>信号截止</strong>：{escape(data.get('decision_date', 'N/A'))} &nbsp;|&nbsp;
+<strong>因子计算区间</strong>：{escape(str(data.get('data_timestamp', '-')))} &nbsp;|&nbsp;
+<strong>配置版本</strong>：{escape(str(data.get('config_version', 'N/A')))}
 </div>
 
 <nav class="toc">
@@ -198,17 +179,17 @@ tr:nth-child(even){{background:#f8f9fa}}
 <div class="chart"><img src="data:image/png;base64,{chart_quadrant}" alt="四象限分布" width="600"></div>
 <table>
 <tr><th>象限</th><th>行业</th></tr>
-<tr><td><strong>黄金配置区</strong></td><td>{escape('、'.join(golden) if golden else '无')}</td></tr>
-<tr><td><strong>左侧观察区</strong></td><td>{escape('、'.join(left) if left else '无')}</td></tr>
-<tr><td><strong>高危警示区</strong></td><td>{escape('、'.join(danger) if danger else '无')}</td></tr>
-<tr><td><strong>垃圾规避区</strong></td><td>{escape('、'.join(garbage) if garbage else '无')}</td></tr>
+<tr><td><strong>黄金配置区</strong></td><td>{escape(data.get('golden_industries', '无'))}</td></tr>
+<tr><td><strong>左侧观察区</strong></td><td>{escape(data.get('left_side_industries', '无'))}</td></tr>
+<tr><td><strong>高危警示区</strong></td><td>{escape(data.get('danger_industries', '无'))}</td></tr>
+<tr><td><strong>垃圾规避区</strong></td><td>{escape(data.get('garbage_industries', '无'))}</td></tr>
 </table>
 </section>
 
 <section id="filter" class="section">
 <h2>二、主观调整说明</h2>
-<p><strong>观察池</strong>：出口链 {escape(', '.join(obs.get('export_chain',[])))}；政策链 {escape(', '.join(obs.get('policy_chain',[])))}；防守 {escape(', '.join(obs.get('defensive',[])))}</p>
-<p><strong>否决行业</strong>：{escape('、'.join(veto) if veto else '无')}</p>
+<p><strong>观察池</strong>：出口链 {escape(', '.join(obs.get('export_chain', [])))}；政策链 {escape(', '.join(obs.get('policy_chain', [])))}；防守 {escape(', '.join(obs.get('defensive', [])))}</p>
+<p><strong>否决行业</strong>：{escape('；'.join(veto) if veto else '无')}</p>
 </section>
 
 <section id="portfolio" class="section">
@@ -216,14 +197,14 @@ tr:nth-child(even){{background:#f8f9fa}}
 <div class="chart"><img src="data:image/png;base64,{chart_pie}" alt="组合权重" width="450"></div>
 <table>
 <tr><th>行业</th><th>代码</th><th>权重</th><th>理由</th></tr>
-{''.join(etf_rows) if etf_rows else '<tr><td colspan="4">无</td></tr>'}
+{etf_rows_html if etf_rows_html else '<tr><td colspan="4">无</td></tr>'}
 </table>
-<p><strong>现金留存</strong>：{escape(str(next((x.get('weight','10') for x in pr.get('defensive_layer',[]) if x.get('sector')=='现金'), '10')))}</p>
+<p><strong>现金留存</strong>：{escape(str(data.get('cash_reserve', '10')))}%</p>
 </section>
 
 <section id="analysis" class="section">
 <h2>四、分析摘要</h2>
-<p class="reasoning"><strong>推理链</strong>：{escape(trace.get('reasoning_chain','-'))}</p>
+<p class="reasoning"><strong>推理链</strong>：{escape(str(data.get('reasoning_chain', '-')))}</p>
 <p><strong>新闻交叉验证</strong></p>
 <ul>{news_html}</ul>
 </section>
@@ -235,8 +216,8 @@ tr:nth-child(even){{background:#f8f9fa}}
 
 <section id="risk" class="section">
 <h2>六、风险提示</h2>
-<p><strong>集中度</strong>：{escape(str(risk.get('concentration_risk','-')))}</p>
-<p><strong>流动性</strong>：{escape(str(risk.get('liquidity_risk','-')))}</p>
+<p><strong>集中度</strong>：{escape(str(risk.get('concentration_risk', '-')))}</p>
+<p><strong>流动性</strong>：{escape(str(risk.get('liquidity_risk', '-')))}</p>
 <p><strong>宏观风险</strong></p><ul>{risk_macro or '<li>无</li>'}</ul>
 <p><strong>行业风险</strong></p><ul>{risk_sector or '<li>无</li>'}</ul>
 </section>
@@ -248,7 +229,7 @@ tr:nth-child(even){{background:#f8f9fa}}
 </html>"""
 
 
-def _export_docx(trace: dict, agent_response: str, chart_quadrant: str, chart_pie: str, out_path: str) -> bool:
+def _export_docx(data: dict, agent_response: str, chart_quadrant: str, chart_pie: str, out_path: str) -> bool:
     """导出为 Word (.docx)"""
     try:
         from docx import Document
@@ -257,30 +238,17 @@ def _export_docx(trace: dict, agent_response: str, chart_quadrant: str, chart_pi
         print("提示: 安装 python-docx 以支持 Word 导出: pip install python-docx")
         return False
 
-    qd = trace.get("quadrant_distribution", {})
-    pr = trace.get("portfolio_recommendation", {})
-    risk = trace.get("risk_checks", {})
-    obs = trace.get("observation_pool_filter", {})
-    news = trace.get("news_validation", {})
-    veto = trace.get("veto_list_exclusions", [])
-
-    golden = qd.get("golden_zone") or [x["sector"] for x in pr.get("offensive_layer", [])]
-    left = qd.get("left_side_zone") or [x["sector"] for x in pr.get("allocation_layer", [])]
-    danger = qd.get("high_risk_zone", qd.get("danger_zone", []))
-    garbage = qd.get("garbage_zone", [])
-
-    decision_date = trace.get("decision_date", trace.get("timestamp", datetime.now().strftime("%Y-%m-%d")))
-    try:
-        dt = datetime.strptime(decision_date, "%Y-%m-%d")
-    except Exception:
-        dt = datetime.now()
-    report_week = _last_week_range(dt)
+    risk = data.get("risk_checks", {})
+    obs = data.get("observation_pool", {})
+    news = data.get("news_validation", {})
+    veto = data.get("veto_list", [])
 
     doc = Document()
     doc.add_heading("ETF 行业轮动周报", 0)
     doc.add_paragraph().add_run(
-        f"报告周：{report_week}  |  报告日期：{decision_date}  |  信号截止：{decision_date}  |  "
-        f"因子计算区间：{trace.get('data_period','-')}  |  配置版本：{str(trace.get('config_version','N/A'))}"
+        f"报告周：{data.get('report_week', 'N/A')}  |  报告日期：{data.get('decision_date', 'N/A')}  |  "
+        f"信号截止：{data.get('decision_date', 'N/A')}  |  因子计算区间：{data.get('data_timestamp', '-')}  |  "
+        f"配置版本：{str(data.get('config_version', 'N/A'))}"
     )
 
     doc.add_heading("一、本期四象限分布", level=1)
@@ -289,16 +257,20 @@ def _export_docx(trace: dict, agent_response: str, chart_quadrant: str, chart_pi
         doc.add_picture(io.BytesIO(img_data), width=Inches(5.5))
     except Exception:
         doc.add_paragraph("（图表加载失败）")
-    t = doc.add_table(rows=5, cols=2)
-    t.rows[0].cells[0].text, t.rows[0].cells[1].text = "象限", "行业"
-    t.rows[1].cells[0].text, t.rows[1].cells[1].text = "黄金配置区", "、".join(golden) if golden else "无"
-    t.rows[2].cells[0].text, t.rows[2].cells[1].text = "左侧观察区", "、".join(left) if left else "无"
-    t.rows[3].cells[0].text, t.rows[3].cells[1].text = "高危警示区", "、".join(danger) if danger else "无"
-    t.rows[4].cells[0].text, t.rows[4].cells[1].text = "垃圾规避区", "、".join(garbage) if garbage else "无"
+    table = doc.add_table(rows=5, cols=2)
+    table.rows[0].cells[0].text, table.rows[0].cells[1].text = "象限", "行业"
+    table.rows[1].cells[0].text, table.rows[1].cells[1].text = "黄金配置区", data.get("golden_industries", "无")
+    table.rows[2].cells[0].text, table.rows[2].cells[1].text = "左侧观察区", data.get("left_side_industries", "无")
+    table.rows[3].cells[0].text, table.rows[3].cells[1].text = "高危警示区", data.get("danger_industries", "无")
+    table.rows[4].cells[0].text, table.rows[4].cells[1].text = "垃圾规避区", data.get("garbage_industries", "无")
 
     doc.add_heading("二、主观调整说明", level=1)
-    doc.add_paragraph(f"观察池：出口链 {', '.join(obs.get('export_chain',[]))}；政策链 {', '.join(obs.get('policy_chain',[]))}；防守 {', '.join(obs.get('defensive',[]))}")
-    doc.add_paragraph(f"否决行业：{'、'.join(veto) if veto else '无'}")
+    doc.add_paragraph(
+        f"观察池：出口链 {', '.join(obs.get('export_chain', []))}；"
+        f"政策链 {', '.join(obs.get('policy_chain', []))}；"
+        f"防守 {', '.join(obs.get('defensive', []))}"
+    )
+    doc.add_paragraph(f"否决行业：{'；'.join(veto) if veto else '无'}")
 
     doc.add_heading("三、本期 ETF 组合建议", level=1)
     try:
@@ -306,29 +278,30 @@ def _export_docx(trace: dict, agent_response: str, chart_quadrant: str, chart_pi
         doc.add_picture(io.BytesIO(img_data), width=Inches(4))
     except Exception:
         doc.add_paragraph("（图表加载失败）")
-    etf_rows = []
-    for layer in [pr.get("offensive_layer", []), pr.get("allocation_layer", []), pr.get("defensive_layer", [])]:
-        for item in layer:
-            if item.get("sector") == "现金":
-                continue
-            etf = item.get("etf", "待确认")
-            code = etf[:6] if etf and etf != "待确认" and len(etf) >= 6 else "-"
-            etf_rows.append([item.get("sector", ""), str(code), str(item.get("weight", "-")), str(item.get("rationale", "-"))])
-    if etf_rows:
-        tbl = doc.add_table(rows=len(etf_rows) + 1, cols=4)
-        tbl.rows[0].cells[0].text, tbl.rows[0].cells[1].text, tbl.rows[0].cells[2].text, tbl.rows[0].cells[3].text = "行业", "代码", "权重", "理由"
-        for i, r in enumerate(etf_rows, 1):
-            tbl.rows[i].cells[0].text, tbl.rows[i].cells[1].text, tbl.rows[i].cells[2].text, tbl.rows[i].cells[3].text = r[0], r[1], r[2], r[3]
+
+    rows = [
+        [row.get("sector", ""), str(row.get("code", "-")), str(row.get("weight", "-")), str(row.get("rationale", "-"))]
+        for row in data.get("etf_rows", [])
+    ]
+    if rows:
+        table = doc.add_table(rows=len(rows) + 1, cols=4)
+        table.rows[0].cells[0].text, table.rows[0].cells[1].text, table.rows[0].cells[2].text, table.rows[0].cells[3].text = (
+            "行业",
+            "代码",
+            "权重",
+            "理由",
+        )
+        for idx, row in enumerate(rows, 1):
+            table.rows[idx].cells[0].text, table.rows[idx].cells[1].text, table.rows[idx].cells[2].text, table.rows[idx].cells[3].text = row
     else:
         doc.add_paragraph("无")
-    cash = next((x.get("weight", "10") for x in pr.get("defensive_layer", []) if x.get("sector") == "现金"), "10")
-    doc.add_paragraph(f"现金留存：{cash}")
+    doc.add_paragraph(f"现金留存：{data.get('cash_reserve', '10')}%")
 
     doc.add_heading("四、分析摘要", level=1)
-    doc.add_paragraph(f"推理链：{trace.get('reasoning_chain', '-')}")
+    doc.add_paragraph(f"推理链：{data.get('reasoning_chain', '-')}")
     doc.add_paragraph("新闻交叉验证")
-    for k, v in (news or {}).items():
-        doc.add_paragraph(f"  • {k}：{v}", style="List Bullet")
+    for key, value in (news or {}).items():
+        doc.add_paragraph(f"  • {key}：{value}", style="List Bullet")
 
     doc.add_heading("五、Agent 完整回复", level=1)
     doc.add_paragraph(agent_response)
@@ -337,11 +310,11 @@ def _export_docx(trace: dict, agent_response: str, chart_quadrant: str, chart_pi
     doc.add_paragraph(f"集中度：{risk.get('concentration_risk', '-')}")
     doc.add_paragraph(f"流动性：{risk.get('liquidity_risk', '-')}")
     doc.add_paragraph("宏观风险")
-    for r in risk.get("macro_risks", []):
-        doc.add_paragraph(f"  • {r}", style="List Bullet")
+    for item in risk.get("macro_risks", []):
+        doc.add_paragraph(f"  • {item}", style="List Bullet")
     doc.add_paragraph("行业风险")
-    for r in risk.get("sector_risks", []):
-        doc.add_paragraph(f"  • {r}", style="List Bullet")
+    for item in risk.get("sector_risks", []):
+        doc.add_paragraph(f"  • {item}", style="List Bullet")
 
     doc.add_paragraph()
     doc.add_paragraph("* 本报告由 AI Quant Assistant 自动生成，须经投研/合规审批后方可对客。")
@@ -358,12 +331,12 @@ def _export_pdf(html: str, out_path: str) -> bool:
         return False
 
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as f:
-            f.write(html)
-            tmp_path = f.name
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as file_obj:
+            file_obj.write(html)
+            tmp_path = file_obj.name
         try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
                 page = browser.new_page()
                 page.goto("file:///" + os.path.abspath(tmp_path).replace("\\", "/"))
                 page.pdf(path=out_path, format="A4", print_background=True)
@@ -371,8 +344,8 @@ def _export_pdf(html: str, out_path: str) -> bool:
         finally:
             os.unlink(tmp_path)
         return True
-    except Exception as e:
-        print(f"PDF 导出失败: {e}")
+    except Exception as exc:
+        print(f"PDF 导出失败: {exc}")
         print("  请确保已执行: playwright install chromium")
         return False
 
@@ -390,51 +363,33 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    if args.trace_path:
-        trace_path = args.trace_path
-        with open(trace_path, "r", encoding="utf-8") as f:
-            trace = json.load(f)
-        trace_dir = os.path.dirname(trace_path)
-    else:
-        today = datetime.now().strftime("%Y-%m-%d")
-        folder = os.path.join(TRACE_DIR, today)
-        if not os.path.isdir(folder):
-            print("未找到今日 trace")
-            sys.exit(1)
-        files = sorted([f for f in os.listdir(folder) if f.endswith(".json") and f.startswith("trace_")], reverse=True)
-        if not files:
-            print("未找到 trace")
-            sys.exit(1)
-        trace_path = os.path.join(folder, files[0])
-        with open(trace_path, "r", encoding="utf-8") as f:
-            trace = json.load(f)
-        trace_dir = folder
+    try:
+        trace, trace_path, trace_dir = load_trace(args.trace_path)
+    except FileNotFoundError:
+        print("未找到今日 trace，请指定路径: python scripts/generate_report_html.py <trace.json>")
+        raise SystemExit(1)
+
+    if not args.trace_path:
         print(f"使用 trace: {trace_path}")
 
-    agent_response = _load_agent_response(trace_dir)
-    chart_quadrant = _make_quadrant_chart(trace)
-    chart_pie = _make_weights_pie(trace)
-    html = _build_html(trace, agent_response, chart_quadrant, chart_pie)
-
-    decision_date = trace.get("decision_date", datetime.now().strftime("%Y-%m-%d"))
-    try:
-        dt = datetime.strptime(decision_date, "%Y-%m-%d")
-    except Exception:
-        dt = datetime.now()
-    report_week = _last_week_range(dt)
+    agent_response = load_agent_response(trace_dir)
+    data = build_report_data(trace)
+    chart_quadrant = _make_quadrant_chart(data)
+    chart_pie = _make_weights_pie(data)
+    html = _build_html(data, agent_response, chart_quadrant, chart_pie)
 
     formats = ["html", "docx", "pdf"] if args.format == "all" else [args.format]
     outputs = []
 
     if "html" in formats:
         out_path = os.path.join(trace_dir, "weekly_report.html")
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(html)
+        with open(out_path, "w", encoding="utf-8") as file_obj:
+            file_obj.write(html)
         outputs.append(out_path)
 
     if "docx" in formats:
         out_path = os.path.join(trace_dir, "weekly_report.docx")
-        if _export_docx(trace, agent_response, chart_quadrant, chart_pie, out_path):
+        if _export_docx(data, agent_response, chart_quadrant, chart_pie, out_path):
             outputs.append(out_path)
 
     if "pdf" in formats:
@@ -442,14 +397,14 @@ def main(argv=None):
         if _export_pdf(html, out_path):
             outputs.append(out_path)
 
-    print(f"\n报告周（上周）: {report_week}")
-    for p in outputs:
-        print(f"  已生成: {p}")
+    print(f"\n报告周（上周）: {data.get('report_week', 'N/A')}")
+    for path in outputs:
+        print(f"  已生成: {path}")
     if "html" in formats and outputs:
         print("  可在浏览器中打开 HTML 查看图表与完整内容")
     if not outputs:
         print("  未成功生成任何输出")
-        sys.exit(1)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

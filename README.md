@@ -125,8 +125,7 @@ AI_Quant_Assistant_for_ETF_Rotation_Strategies/
 │       ├── prompt_builder.py
 │       ├── router_prompts.py
 │       ├── workflow_prompts.py
-│       ├── reflection_prompt.py
-│       └── system_prompt.py         # 兼容旧用法的默认导出
+│       └── reflection_prompt.py
 ├── tools/
 │   ├── __init__.py                  # ALL_TOOLS 聚合
 │   ├── data_tools.py
