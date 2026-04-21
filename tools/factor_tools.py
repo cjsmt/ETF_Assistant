@@ -9,13 +9,19 @@ from .data_tools import _get_provider, _load_market_config
 
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
 
+
 def _get_factor_provider(market: str):
     cfg = _load_market_config(market)
     return _get_provider(cfg)
 
+
 def _load_factor_params() -> dict:
     with open(os.path.join(CONFIG_DIR, "factor_params.yaml"), "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _print_factor_progress(stage: str, current: int, total: int, name: str, code: str, provider_name: str):
+    print(f"[{stage}] {provider_name} 进度 {current}/{total}: {name}({code})", flush=True)
 
 def _calc_ma_score(close: pd.Series, short_p: int, mid_p: int, long_p: int) -> int:
     if len(close) < long_p:
@@ -84,7 +90,13 @@ def calc_factors(market: str = "a_share", start_date: str = "2024-01-01", end_da
 
     rows = []
     provider_name = market_cfg.get("data_provider", "")
-    for i, ind in enumerate(market_cfg.get("industries", [])):
+    industries = market_cfg.get("industries", [])
+    print(
+        f"[calc_factors] 开始计算 {market} 市场因子，共 {len(industries)} 个行业，数据源={provider_name}",
+        flush=True,
+    )
+    for i, ind in enumerate(industries):
+        _print_factor_progress("calc_factors", i + 1, len(industries), ind["name"], ind["code"], provider_name)
         if i > 0:
             # AKShare/Tushare 均有接口限流，请求间隔避免 IP 超限
             if provider_name == "akshare":
@@ -94,6 +106,7 @@ def calc_factors(market: str = "a_share", start_date: str = "2024-01-01", end_da
         code, name = ind["code"], ind["name"]
         df = provider.get_industry_index_daily(code, start_date, end_date)
         if df.empty:
+            print(f"[calc_factors] 跳过 {name}({code})：未获取到有效数据", flush=True)
             continue
 
         ma = _calc_ma_score(df["close"], ma_p["short_period"], ma_p["mid_period"], ma_p["long_period"])
@@ -115,6 +128,8 @@ def calc_factors(market: str = "a_share", start_date: str = "2024-01-01", end_da
 
     if not rows:
         return "No factor data computed."
+
+    print(f"[calc_factors] 因子计算完成，成功产出 {len(rows)} 个行业", flush=True)
 
     result_df = pd.DataFrame(rows)
 
@@ -151,7 +166,13 @@ def calc_factors_df(market: str = "a_share", start_date: str = "2024-01-01", end
 
     rows = []
     provider_name = market_cfg.get("data_provider", "")
-    for i, ind in enumerate(market_cfg.get("industries", [])):
+    industries = market_cfg.get("industries", [])
+    print(
+        f"[calc_factors_df] 开始计算 {market} 市场因子，共 {len(industries)} 个行业，数据源={provider_name}",
+        flush=True,
+    )
+    for i, ind in enumerate(industries):
+        _print_factor_progress("calc_factors_df", i + 1, len(industries), ind["name"], ind["code"], provider_name)
         if i > 0:
             if provider_name == "akshare":
                 time.sleep(0.8 + random.random() * 0.7)
@@ -160,6 +181,7 @@ def calc_factors_df(market: str = "a_share", start_date: str = "2024-01-01", end
         code, name = ind["code"], ind["name"]
         df = provider.get_industry_index_daily(code, start_date, end_date)
         if df.empty:
+            print(f"[calc_factors_df] 跳过 {name}({code})：未获取到有效数据", flush=True)
             continue
 
         ma = _calc_ma_score(df["close"], ma_p["short_period"], ma_p["mid_period"], ma_p["long_period"])
@@ -171,6 +193,8 @@ def calc_factors_df(market: str = "a_share", start_date: str = "2024-01-01", end
 
     if not rows:
         return pd.DataFrame()
+
+    print(f"[calc_factors_df] 因子计算完成，成功产出 {len(rows)} 个行业", flush=True)
 
     result_df = pd.DataFrame(rows)
     result_df["ma_rank"] = _cross_sectional_rank(result_df["ma_score"])

@@ -36,6 +36,10 @@ def map_etf(industries: str, market: str = "a_share") -> str:
 
     provider = _get_etf_provider()
     industry_list = [s.strip() for s in industries.split(",")]
+    print(
+        f"[map_etf] 开始映射 ETF，共 {len([x for x in industry_list if x])} 个行业，market={market}",
+        flush=True,
+    )
 
     codes_to_fetch = []
     ind_to_entry = {}
@@ -49,10 +53,16 @@ def map_etf(industries: str, market: str = "a_share") -> str:
         if code:
             codes_to_fetch.append(code)
 
+    if codes_to_fetch:
+        print(f"[map_etf] 批量拉取 ETF 信息，共 {len(codes_to_fetch)} 只产品", flush=True)
     info_map = provider.get_etf_info_batch(codes_to_fetch) if codes_to_fetch else {}
 
     results = []
-    for ind_name in industry_list:
+    total = len([x for x in industry_list if x])
+    for idx, ind_name in enumerate(industry_list, start=1):
+        if not ind_name:
+            continue
+        print(f"[map_etf] 进度 {idx}/{total}: {ind_name}", flush=True)
         if ind_name not in mapping:
             results.append(f"{ind_name}: No ETF mapping found.")
             continue
@@ -82,4 +92,5 @@ def map_etf(industries: str, market: str = "a_share") -> str:
         result_line = f"{ind_name} -> {code} {name} [{status}] (size={size/1e8:.1f}亿, turnover={turnover/1e6:.0f}M){' (' + '; '.join(notes) + ')' if notes else ''}{alt_str}"
         results.append(result_line)
 
+    print(f"[map_etf] 映射完成，输出 {len(results)} 条结果", flush=True)
     return "\n".join(results)

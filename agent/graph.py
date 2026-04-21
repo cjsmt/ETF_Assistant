@@ -29,6 +29,10 @@ MAX_TOOL_CALLS = 8
 MAX_REPEATED_TOOL_CALLS = 2
 
 
+def _log_graph(node_name: str, message: str, level: str = "INFO") -> None:
+    print(f"[graph][{node_name}][{level}] {message}", flush=True)
+
+
 def _extract_user_input(state: AgentState) -> str:
     if state.get("user_input"):
         return state["user_input"]
@@ -66,6 +70,7 @@ def build_graph(model_name: str = None) -> StateGraph:
     def router_node(state: AgentState):
         user_input = _extract_user_input(state)
         role = state.get("role", "researcher")
+        _log_graph("router", f"开始路由，role={role}，market={state.get('market', 'a_share')}")
         router_prompt = build_router_prompt(
             role=role,
             market=state.get("market", "a_share"),
@@ -80,7 +85,11 @@ def build_graph(model_name: str = None) -> StateGraph:
             requires_trace_save = decision.requires_trace_save
             route_confidence = decision.confidence
             route_reason = decision.route_reason
-        except Exception:
+            _log_graph(
+                "router",
+                f"结构化路由完成：task={task_key}，strategy={data_strategy}，tools={should_use_tools}，trace_save={requires_trace_save}，conf={route_confidence:.2f}",
+            )
+        except Exception as exc:
             task_key = infer_task_key(user_input=user_input, role=role)
             lowered = (user_input or "").lower()
             if any(x in lowered for x in ["为什么跌", "为什么涨", "解释", "trace", "审查", "回顾", "上周"]):
@@ -93,6 +102,11 @@ def build_graph(model_name: str = None) -> StateGraph:
             requires_trace_save = any(x in lowered for x in ["周报", "正式", "审批", "组合建议"])
             route_confidence = 0.5
             route_reason = f"结构化路由失败，回退到规则路由，任务识别为 {task_key}"
+            _log_graph("router", f"结构化路由失败，已回退规则路由：{exc}", level="WARN")
+            _log_graph(
+                "router",
+                f"规则路由完成：task={task_key}，strategy={data_strategy}，tools={should_use_tools}，trace_save={requires_trace_save}，conf={route_confidence:.2f}",
+            )
 
         return {
             "user_input": user_input,
@@ -106,6 +120,7 @@ def build_graph(model_name: str = None) -> StateGraph:
         }
 
     def planner_node(state: AgentState):
+        _log_graph("planner", f"开始生成执行计划，task={state.get('task_key', 'generic')}")
         planner_prompt = build_planner_prompt(
             role=state.get("role", "researcher"),
             market=state.get("market", "a_share"),
@@ -116,12 +131,17 @@ def build_graph(model_name: str = None) -> StateGraph:
             client_risk_level=state.get("client_risk_level"),
         )
         response = base_llm.invoke([{"role": "system", "content": planner_prompt}])
+        _log_graph("planner", "执行计划已生成")
         return {"execution_plan": response.content}
 
     def executor_node(state: AgentState):
         today = datetime.now().strftime("%Y-%m-%d")
         date_hint = f"\n\n【系统信息】当前日期：{today}（解读「本周」「今日」「近250日」等相对时间时请以此为准）"
         user_input = _extract_user_input(state)
+        _log_graph(
+            "executor",
+            f"开始执行通用任务，tool_calls_used={state.get('tool_call_count', 0)}/{MAX_TOOL_CALLS}",
+        )
         system_prompt = build_system_prompt(
             role=state.get("role", "researcher"),
             market=state.get("market", "a_share"),
@@ -150,6 +170,12 @@ def build_graph(model_name: str = None) -> StateGraph:
                 stop_reason = "检测到重复工具调用模式，已提前停止以避免死循环。"
             elif tool_call_count >= MAX_TOOL_CALLS:
                 stop_reason = "已达到工具调用预算上限，转入收束回答。"
+            _log_graph(
+                "executor",
+                f"本轮产生 {len(response.tool_calls)} 个工具调用，累计 {tool_call_count}/{MAX_TOOL_CALLS}",
+            )
+            if stop_reason:
+                _log_graph("executor", stop_reason, level="WARN")
             updates.update(
                 {
                     "tool_call_count": tool_call_count,
@@ -158,11 +184,14 @@ def build_graph(model_name: str = None) -> StateGraph:
                     "stop_reason": stop_reason,
                 }
             )
+        else:
+            _log_graph("executor", "本轮未继续调用工具，准备结束或进入收束")
         return updates
 
     def finalizer_node(state: AgentState):
         today = datetime.now().strftime("%Y-%m-%d")
         date_hint = f"\n\n【系统信息】当前日期：{today}（解读「本周」「今日」「近250日」等相对时间时请以此为准）"
+        _log_graph("finalize", "开始生成最终回答")
         system_prompt = build_system_prompt(
             role=state.get("role", "researcher"),
             market=state.get("market", "a_share"),
@@ -174,6 +203,7 @@ def build_graph(model_name: str = None) -> StateGraph:
         if workflow_context:
             final_guidance += "\n\n## 固定子图上下文\n" + workflow_context
         response = base_llm.invoke([{"role": "system", "content": system_prompt + "\n\n" + final_guidance + date_hint}] + state["messages"])
+        _log_graph("finalize", "最终回答已生成")
         return {"messages": [response]}
 
     graph = StateGraph(AgentState)
@@ -244,16 +274,19 @@ def run_agent(
     for state in app.stream(initial_state, config, stream_mode="values"):
         last_state = state
         if verbose and state.get("task_key") and state.get("task_key") != last_task_key:
-            print(f"  ≈ 路由: {state['task_key']}", flush=True)
+            _log_graph("stream", f"当前任务路由：{state['task_key']}")
             last_task_key = state["task_key"]
         if verbose and state.get("route_reason") and state.get("route_reason") != last_route_reason:
             confidence = state.get("route_confidence", 0.0)
             strategy = state.get("data_strategy", "unknown")
             tools_flag = "是" if state.get("should_use_tools", True) else "否"
-            print(f"  ≈ 路由说明: {state['route_reason']} | strategy={strategy} | tools={tools_flag} | conf={confidence:.2f}", flush=True)
+            _log_graph(
+                "stream",
+                f"路由说明：{state['route_reason']} | strategy={strategy} | tools={tools_flag} | conf={confidence:.2f}",
+            )
             last_route_reason = state["route_reason"]
         if verbose and state.get("execution_plan") and state.get("execution_plan") != last_plan:
-            print("  ≈ 计划已生成", flush=True)
+            _log_graph("stream", "执行计划已进入状态")
             last_plan = state["execution_plan"]
         msgs = state.get("messages", [])
         if not verbose or len(msgs) <= last_msg_count:
@@ -261,11 +294,11 @@ def run_agent(
         for m in msgs[last_msg_count:]:
             if hasattr(m, "tool_calls") and m.tool_calls:
                 names = [tc.get("name", "?") for tc in m.tool_calls]
-                print(f"  → 调用: {', '.join(names)}", flush=True)
+                _log_graph("tools", f"触发工具调用：{', '.join(names)}")
             elif getattr(m, "type", "") == "tool" and hasattr(m, "name"):
-                print(f"  ✓ 返回: {m.name}", flush=True)
+                _log_graph("tools", f"工具返回：{m.name}")
         last_msg_count = len(msgs)
 
     if verbose and last_state and last_state.get("stop_reason"):
-        print(f"  ≈ 收束: {last_state['stop_reason']}", flush=True)
+        _log_graph("stream", f"收束原因：{last_state['stop_reason']}", level="WARN")
     return last_state["messages"][-1].content

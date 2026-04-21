@@ -26,13 +26,17 @@ class AKShareProvider(BaseDataProvider):
 
     def _fetch_index_hist(self, code: str, max_retries: int = 3) -> pd.DataFrame:
         """拉取申万行业指数日线（指数退避+抖动重试）。"""
+        print(f"[AKShareProvider] 开始拉取行业指数 {code}", flush=True)
         try:
-            return _backoff_retry(
+            df = _backoff_retry(
                 lambda: ak.index_hist_sw(symbol=code, period="day"),
                 max_tries=max_retries,
                 name=f"index_hist_sw({code})",
             )
+            print(f"[AKShareProvider] 行业指数 {code} 拉取成功，共 {len(df)} 行", flush=True)
+            return df
         except Exception:
+            print(f"[AKShareProvider] 行业指数 {code} 拉取失败，返回空结果", flush=True)
             return pd.DataFrame()
 
     def get_industry_index_daily(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -91,13 +95,17 @@ class AKShareProvider(BaseDataProvider):
 
     def _fetch_etf_spot_df(self, max_retries: int = 5) -> pd.DataFrame:
         """拉取全市场 ETF 行情。东方财富易断连，用指数退避+抖动。"""
+        print("[AKShareProvider] 开始拉取全市场 ETF 行情", flush=True)
         try:
-            return _backoff_retry(
+            df = _backoff_retry(
                 ak.fund_etf_spot_em,
                 max_tries=max_retries,
                 name="fund_etf_spot_em",
             )
+            print(f"[AKShareProvider] 全市场 ETF 行情拉取成功，共 {len(df)} 条", flush=True)
+            return df
         except Exception:
+            print("[AKShareProvider] 全市场 ETF 行情拉取失败，返回空结果", flush=True)
             return pd.DataFrame()
 
     def _get_etf_info_yf_fallback(self, code: str) -> dict:
@@ -121,6 +129,7 @@ class AKShareProvider(BaseDataProvider):
 
     def get_etf_info_batch(self, codes: List[str]) -> Dict[str, dict]:
         """一次拉取全市场 ETF；失败时用 yfinance 逐个拉取备用。"""
+        print(f"[AKShareProvider] 开始批量获取 ETF 信息，共 {len(codes)} 只", flush=True)
         df = self._fetch_etf_spot_df()
         result = {}
         if df.empty:
@@ -129,9 +138,11 @@ class AKShareProvider(BaseDataProvider):
             for i, code in enumerate(codes):
                 if i > 0:
                     time.sleep(0.4)  # 限流保护
+                print(f"[AKShareProvider] yfinance 备用进度 {i+1}/{len(codes)}: {code}", flush=True)
                 result[code] = self._get_etf_info_yf_fallback(code)
             return result
-        for code in codes:
+        for i, code in enumerate(codes):
+            print(f"[AKShareProvider] ETF 信息进度 {i+1}/{len(codes)}: {code}", flush=True)
             row = df[df["代码"] == code]
             if row.empty:
                 result[code] = {"code": code, "name": "N/A", "fund_size": 0, "avg_daily_turnover": 0}
@@ -143,6 +154,7 @@ class AKShareProvider(BaseDataProvider):
                     "fund_size": float(r.get("最新规模", 0) or 0),
                     "avg_daily_turnover": float(r.get("成交额", 0) or 0),
                 }
+        print(f"[AKShareProvider] ETF 信息批量获取完成，共返回 {len(result)} 条", flush=True)
         return result
 
     def get_etf_info(self, code: str) -> dict:

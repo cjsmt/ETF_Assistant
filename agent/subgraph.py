@@ -221,6 +221,14 @@ def _bump_tool_count(state: AgentState, increment: int) -> int:
     return state.get("tool_call_count", 0) + increment
 
 
+def _log_node(node_name: str, message: str, level: str = "INFO") -> None:
+    print(f"[subgraph][{node_name}][{level}] {message}", flush=True)
+
+
+def _log_step(node_name: str, step: int, total: int, message: str) -> None:
+    _log_node(node_name, f"步骤 {step}/{total}: {message}")
+
+
 def route_after_planner(state: AgentState) -> SubgraphRoute:
     if not state.get("should_use_tools", True):
         return "finalize"
@@ -230,25 +238,38 @@ def route_after_planner(state: AgentState) -> SubgraphRoute:
 def weekly_prepare_node(state: AgentState):
     market = state.get("market", "a_share")
     start_date, end_date = _date_range(days=365)
+    _log_node("weekly_prepare", f"开始生成周报主干，market={market}，区间={start_date}~{end_date}")
 
+    _log_step("weekly_prepare", 1, 5, "抓取市场数据摘要")
     market_data_summary = _safe_invoke_tool(
         get_market_data,
         {"market": market, "start_date": start_date, "end_date": end_date},
     )
+    _log_node("weekly_prepare", "步骤 1/5 完成")
+
+    _log_step("weekly_prepare", 2, 5, "计算行业因子")
     factor_df = calc_factors_df(market=market, start_date=start_date, end_date=end_date)
     if factor_df.empty:
+        _log_node("weekly_prepare", "步骤 2/5 失败：未计算出有效因子数据", level="WARN")
         return {
             "workflow_context": "固定周报子图执行失败：未计算出有效因子数据。",
             "task_payload": {},
             "stop_reason": "周报子图未获得有效因子数据。",
         }
+    _log_node("weekly_prepare", f"步骤 2/5 完成：获得 {len(factor_df)} 个行业因子")
 
     factor_summary = factor_df[
         ["industry", "trend_score", "consensus_score"]
     ].sort_values("trend_score", ascending=False).to_string(index=False)
+
+    _log_step("weekly_prepare", 3, 5, "划分四象限")
     quadrant_df = score_quadrant_df(factor_df)
     quadrant_distribution, quadrant_summary = _summarize_quadrants(quadrant_df)
+    _log_node("weekly_prepare", "步骤 3/5 完成")
+
+    _log_step("weekly_prepare", 4, 5, "读取观察池与负面清单")
     overlay_text = _safe_invoke_tool(get_ic_overlay_config, {"market": market})
+    _log_node("weekly_prepare", "步骤 4/5 完成")
     preferred_industries = quadrant_df[
         quadrant_df["quadrant"].isin(["黄金配置区", "左侧观察区"])
     ]["industry"].head(6).tolist()
@@ -262,6 +283,7 @@ def weekly_prepare_node(state: AgentState):
         if preferred_industries
         else "无可映射行业。"
     )
+    _log_node("weekly_prepare", f"步骤 5/5 完成：ETF 映射候选 {len(preferred_industries)} 个行业")
     observation_pool, veto_list = _parse_overlay_text(overlay_text)
     portfolio_recommendation = _parse_mapping_text(
         etf_mapping_text,
@@ -302,6 +324,7 @@ def weekly_prepare_node(state: AgentState):
 def weekly_persist_node(state: AgentState):
     payload = dict(state.get("task_payload", {}))
     workflow_context = state.get("workflow_context", "")
+    _log_node("weekly_persist", "开始生成周报模板预览")
     report_preview = _safe_invoke_tool(
         generate_report,
         {
@@ -310,13 +333,18 @@ def weekly_persist_node(state: AgentState):
             "role": state.get("role", "researcher"),
         },
     )
+    _log_node("weekly_persist", "模板预览已生成")
 
     save_result = "本次任务未要求保存 Decision Trace。"
     if state.get("requires_trace_save", False) and payload:
+        _log_node("weekly_persist", "开始保存 Decision Trace")
         save_result = _safe_invoke_tool(
             save_decision_trace,
             {"trace_json": json.dumps(payload, ensure_ascii=False)},
         )
+        _log_node("weekly_persist", "Decision Trace 已保存")
+    else:
+        _log_node("weekly_persist", "当前任务未要求保存 Trace", level="WARN")
 
     return {
         "workflow_context": _concat_sections(
@@ -328,15 +356,19 @@ def weekly_persist_node(state: AgentState):
 
 
 def trace_history_node(state: AgentState):
+    _log_step("trace_history", 1, 2, "读取最近 7 天 Trace 历史")
     history_text = _safe_invoke_tool(get_decision_history, {"days": 7})
+    _log_step("trace_history", 2, 2, "定位最新 Trace 文件")
     latest_path = _latest_trace_file()
     if not latest_path:
+        _log_node("trace_history", "未找到任何可审查的 Trace 文件", level="WARN")
         return {
             "workflow_context": "## 固定子图：合规 Trace 审查\n未找到任何可审查的 trace 文件。",
             "latest_trace_path": "",
             "task_payload": {},
             "stop_reason": "最近无 trace 可供审查。",
         }
+    _log_node("trace_history", f"已定位最新 Trace: {latest_path}")
 
     return {
         "workflow_context": _concat_sections(
@@ -352,11 +384,13 @@ def trace_review_node(state: AgentState):
     latest_path = state.get("latest_trace_path", "")
     workflow_context = state.get("workflow_context", "")
     if not latest_path or not os.path.isfile(latest_path):
+        _log_node("trace_review", "最新 Trace 文件缺失，无法继续审查", level="WARN")
         return {
             "workflow_context": _concat_sections(workflow_context, "未找到最新 trace 文件，无法继续审查。"),
             "stop_reason": "最新 trace 文件缺失。",
         }
 
+    _log_node("trace_review", f"开始审查 Trace: {latest_path}")
     with open(latest_path, "r", encoding="utf-8") as file_obj:
         trace = json.load(file_obj)
 
@@ -386,6 +420,7 @@ def trace_review_node(state: AgentState):
         review_lines.append(
             f"- 四象限摘要：{json.dumps(trace.get('quadrant_distribution'), ensure_ascii=False)}"
         )
+    _log_node("trace_review", f"审查完成：缺失字段 {len(missing_keys)} 个")
 
     return {
         "workflow_context": _concat_sections(
@@ -400,14 +435,18 @@ def trace_review_node(state: AgentState):
 def backtest_compare_node(state: AgentState):
     market = state.get("market", "a_share")
     start_date, end_date = _date_range(days=730)
+    _log_node("backtest_compare", f"开始参数回测对比，market={market}，区间={start_date}~{end_date}")
+    _log_step("backtest_compare", 1, 2, "执行月频回测")
     monthly = _safe_invoke_tool(
         run_backtest,
         {"market": market, "start_date": start_date, "end_date": end_date, "rebalance_freq": "monthly"},
     )
+    _log_step("backtest_compare", 2, 2, "执行周频回测")
     weekly = _safe_invoke_tool(
         run_backtest,
         {"market": market, "start_date": start_date, "end_date": end_date, "rebalance_freq": "weekly"},
     )
+    _log_node("backtest_compare", "回测对比完成")
     payload = {
         "market": market,
         "start_date": start_date,
@@ -430,20 +469,26 @@ def backtest_compare_node(state: AgentState):
 def conflict_check_node(state: AgentState):
     market = state.get("market", "a_share")
     start_date, end_date = _date_range(days=365)
+    _log_step("conflict_check", 1, 3, "计算行业因子")
     factor_df = calc_factors_df(market=market, start_date=start_date, end_date=end_date)
     if factor_df.empty:
+        _log_node("conflict_check", "未获得有效因子数据", level="WARN")
         return {
             "workflow_context": "固定冲突检查子图执行失败：因子为空。",
             "stop_reason": "冲突检查无有效因子数据。",
         }
 
+    _log_step("conflict_check", 2, 3, "读取观察池与负面清单")
     quadrant_df = score_quadrant_df(factor_df)
     golden = quadrant_df[quadrant_df["quadrant"] == "黄金配置区"]["industry"].head(3).tolist()
     overlay_text = _safe_invoke_tool(get_ic_overlay_config, {"market": market})
+    _log_step("conflict_check", 3, 3, f"核验重点行业新闻，共 {len(golden)} 个")
     news_parts = []
     for industry in golden:
+        _log_node("conflict_check", f"正在核验新闻：{industry}")
         news = _safe_invoke_tool(search_news_cn, {"keywords": industry, "limit": 5})
         news_parts.append(f"#### {industry}\n{news}")
+    _log_node("conflict_check", "信号冲突检查完成")
 
     payload = {
         "market": market,
@@ -464,14 +509,18 @@ def conflict_check_node(state: AgentState):
 
 
 def rm_explain_node(state: AgentState):
+    _log_step("rm_explain", 1, 2, "读取最近决策历史")
     history = _safe_invoke_tool(get_decision_history, {"days": 14})
     keywords = _extract_keywords(state.get("user_input", ""), max_keywords=2)
+    _log_step("rm_explain", 2, 2, f"补充相关新闻，共 {len(keywords)} 个关键词")
     news_chunks = []
     for keyword in keywords:
+        _log_node("rm_explain", f"正在检索关键词：{keyword}")
         news_chunks.append(
             f"#### 关键词：{keyword}\n"
             f"{_safe_invoke_tool(search_news_cn, {'keywords': keyword, 'limit': 5})}"
         )
+    _log_node("rm_explain", "RM 业绩解释上下文准备完成")
 
     payload = {"history": history, "keywords": keywords, "news": news_chunks}
     return {
@@ -488,22 +537,27 @@ def rm_explain_node(state: AgentState):
 def rm_portfolio_prepare_node(state: AgentState):
     market = state.get("market", "a_share")
     start_date, end_date = _date_range(days=365)
+    _log_step("rm_portfolio_prepare", 1, 3, "计算行业因子")
     factor_df = calc_factors_df(market=market, start_date=start_date, end_date=end_date)
     if factor_df.empty:
+        _log_node("rm_portfolio_prepare", "未获取有效因子数据", level="WARN")
         return {
             "workflow_context": "固定 RM 组合子图执行失败：未获取有效因子。",
             "stop_reason": "RM 组合任务因子为空。",
         }
 
+    _log_step("rm_portfolio_prepare", 2, 3, "筛选候选行业")
     quadrant_df = score_quadrant_df(factor_df)
     picks = quadrant_df[
         quadrant_df["quadrant"].isin(["黄金配置区", "左侧观察区"])
     ]["industry"].head(4).tolist()
+    _log_step("rm_portfolio_prepare", 3, 3, f"映射 ETF，共 {len(picks)} 个行业")
     mapped = (
         _safe_invoke_tool(map_etf, {"industries": ",".join(picks), "market": market})
         if picks
         else "无可映射行业。"
     )
+    _log_node("rm_portfolio_prepare", "RM 组合建议准备完成")
     risk_level = state.get("client_risk_level") or "未提供（默认中性口径）"
     payload = {
         "market": market,
@@ -526,8 +580,10 @@ def rm_portfolio_persist_node(state: AgentState):
     payload = dict(state.get("task_payload", {}))
     workflow_context = state.get("workflow_context", "")
     if not (state.get("requires_trace_save", False) and payload):
+        _log_node("rm_portfolio_persist", "当前任务未要求保存 Trace", level="WARN")
         return {"workflow_context": workflow_context}
 
+    _log_node("rm_portfolio_persist", "开始保存 RM 组合 Trace")
     trace = {
         "decision_date": _today(),
         "market": payload.get("market", state.get("market", "a_share")),
@@ -541,6 +597,7 @@ def rm_portfolio_persist_node(state: AgentState):
         save_decision_trace,
         {"trace_json": json.dumps(trace, ensure_ascii=False)},
     )
+    _log_node("rm_portfolio_persist", "RM 组合 Trace 已保存")
     return {
         "workflow_context": _concat_sections(
             workflow_context,
@@ -550,13 +607,16 @@ def rm_portfolio_persist_node(state: AgentState):
 
 
 def compliance_risk_node(state: AgentState):
+    _log_step("compliance_risk", 1, 2, "定位最新 Trace")
     latest_path = _latest_trace_file()
     if not latest_path or not os.path.isfile(latest_path):
+        _log_node("compliance_risk", "未找到可审查的 Trace", level="WARN")
         return {
             "workflow_context": "## 固定子图：合规风险检查\n未找到可审查的 trace。",
             "stop_reason": "风险检查缺少 trace 输入。",
         }
 
+    _log_step("compliance_risk", 2, 2, f"读取并审查 Trace: {latest_path}")
     with open(latest_path, "r", encoding="utf-8") as file_obj:
         trace = json.load(file_obj)
 
@@ -568,6 +628,7 @@ def compliance_risk_node(state: AgentState):
     missing = [
         key for key in ["risk_checks", "portfolio_recommendation", "approval_status"] if key not in trace
     ]
+    _log_node("compliance_risk", f"风险检查完成：缺失关键字段 {len(missing)} 个")
     return {
         "workflow_context": _concat_sections(
             "## 固定子图：合规风险检查（compliance_risk_check）",
