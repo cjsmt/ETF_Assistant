@@ -706,17 +706,81 @@ def multi_agent_debate_node(state: AgentState):
     observation_text = json.dumps(observation_pool, ensure_ascii=False, indent=2)
     veto_text = "; ".join(veto_list) if veto_list else "无"
 
-    # Macro events & news in parallel
-    with _futures.ThreadPoolExecutor(max_workers=2) as pool:
-        fut_macro = pool.submit(_safe_invoke_tool, get_macro_events, {})
-        golden = quadrant_df[quadrant_df["quadrant"] == "黄金配置区"]["industry"].head(4).tolist()
-        fut_news = pool.submit(
+    # Macro evidence — four-way parallel scrape (Pattern 3).
+    # Instead of relying on a single macro feed (which often empties out due to
+    # AKShare 金十 rate-limits or Alpha Vantage network issues), we run four
+    # independent queries concurrently and concatenate whatever returns non-empty.
+    # This makes the Macro specialist far more likely to see SOMETHING.
+    golden = quadrant_df[quadrant_df["quadrant"] == "黄金配置区"]["industry"].head(4).tolist()
+    sector_kw = "、".join(golden[:3]) if golden else market
+
+    # Lazy-import to keep startup time low
+    try:
+        from tools.news_tools import search_news as _search_global_news  # type: ignore
+    except Exception:
+        _search_global_news = None
+
+    with _futures.ThreadPoolExecutor(max_workers=4) as pool:
+        fut_macro_cn = pool.submit(_safe_invoke_tool, get_macro_events, {})
+        fut_macro_kw = pool.submit(
             _safe_invoke_tool,
             search_news_cn,
-            {"keywords": "、".join(golden[:3]) if golden else market, "limit": 8},
+            {"keywords": "宏观 央行 货币政策 财政 地缘", "limit": 6},
         )
-        macro_events = fut_macro.result()
-        news_text = fut_news.result()
+        fut_news_sector = pool.submit(
+            _safe_invoke_tool, search_news_cn, {"keywords": sector_kw, "limit": 8}
+        )
+        if _search_global_news is not None:
+            fut_news_global = pool.submit(
+                _safe_invoke_tool,
+                _search_global_news,
+                {"keywords": sector_kw or "china equity", "source": "alphavantage", "limit": 6},
+            )
+        else:
+            fut_news_global = None
+
+        raw_macro_cn = fut_macro_cn.result() or ""
+        raw_macro_kw = fut_macro_kw.result() or ""
+        news_sector = fut_news_sector.result() or ""
+        raw_global = fut_news_global.result() if fut_news_global else ""
+
+    def _is_useful(txt: str) -> bool:
+        t = (txt or "").strip()
+        if len(t) < 40:
+            return False
+        low = t.lower()
+        for neg in ("未找到", "暂无", "error", "未配置"):
+            if neg in low:
+                return False
+        return True
+
+    macro_blocks: list[str] = []
+    if _is_useful(raw_macro_cn):
+        macro_blocks.append("### 国内宏观快讯 (金十 / AKShare)\n" + raw_macro_cn)
+    if _is_useful(raw_macro_kw):
+        macro_blocks.append("### 宏观主题新闻 (政策/央行/地缘)\n" + raw_macro_kw)
+    if _is_useful(raw_global):
+        macro_blocks.append("### 全球财经新闻 (Alpha Vantage)\n" + raw_global)
+
+    if macro_blocks:
+        macro_events = "\n\n".join(macro_blocks)
+    else:
+        macro_events = "(国内 + 全球宏观源此刻均返回空；请基于观察池与否决清单做保守推断。)"
+        _log_node(
+            "multi_agent_debate",
+            "所有 4 路宏观源均返回空，Macro Agent 将只依赖 observation pool / veto list",
+            level="WARN",
+        )
+
+    news_text = news_sector or ""
+
+    _log_node(
+        "multi_agent_debate",
+        f"证据就绪: factor={len(factor_summary)} chars, "
+        f"quadrant={len(quadrant_summary)} chars, "
+        f"macro={len(macro_events)} chars (blocks={len(macro_blocks)}), "
+        f"news={len(news_text)} chars",
+    )
 
     _log_step("multi_agent_debate", 3, 4, "运行 Quant/Macro/Risk 三 Agent（并行）")
     user_question = state.get("user_input", "")

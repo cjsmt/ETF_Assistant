@@ -209,4 +209,6 @@ def calc_factors_df(market: str = "a_share", start_date: str = "2024-01-01", end
         cw["etf_flow_contrarian"] * result_df["efc_rank"] + cw["smart_money"] * result_df["sm_rank"]
         + cw["volatility_convergence"] * result_df["vc_rank"]
     ).round(4)
-    return result_df[["industry", "trend_score", "consensus_score"]].sort_values("trend_score", ascending=False)
+    return result_df[
+        ["industry", "ma_score", "momentum", "trend_score", "consensus_score"]
+    ].sort_values("trend_score", ascending=False)
