@@ -6,24 +6,35 @@ import frontend._bootstrap  # noqa: F401
 import streamlit as st
 
 from agent.patterns.guardrails import decide_hitl, list_hitl_queue
+from frontend.i18n import t
 
-st.set_page_config(page_title="HITL Approval", page_icon="🛡️", layout="wide")
-st.title("🛡️ Human-in-the-Loop Approval Queue")
-st.caption("Pattern 18 / Guardrails. Formal deliverables cannot ship to clients until approved here.")
+st.title(t("hitl.title"))
+st.caption(t("hitl.caption"))
+
+STATUS_KEYS = ["all", "pending", "approved", "rejected"]
+STATUS_LABELS = {
+    "all":      t("hitl.status.all"),
+    "pending":  t("hitl.status.pending"),
+    "approved": t("hitl.status.approved"),
+    "rejected": t("hitl.status.rejected"),
+}
 
 status_filter = st.selectbox(
-    "Filter by status", ["all", "pending", "approved", "rejected"], index=0
+    t("hitl.filter"),
+    options=STATUS_KEYS,
+    format_func=lambda k: STATUS_LABELS[k],
+    index=0,
 )
 queue = list_hitl_queue(status=status_filter)
 
 col_list, col_detail = st.columns([1, 2])
 
 with col_list:
-    st.markdown(f"### {len(queue)} requests")
+    st.markdown(f"### {t('hitl.count', n=len(queue))}")
     if not queue:
-        st.info("Queue is empty.")
+        st.info(t("hitl.empty"))
     idx = st.radio(
-        "Select a request",
+        t("hitl.select"),
         options=list(range(len(queue))),
         format_func=lambda i: (
             f"{queue[i]['status']:>8} · {queue[i]['created_at']} · {queue[i]['task_key']} "
@@ -35,30 +46,35 @@ with col_list:
 with col_detail:
     if queue and idx is not None:
         rec = queue[idx]
-        st.markdown(f"### Request `{rec['id']}`")
+        st.markdown(f"### {t('hitl.request')} `{rec['id']}`")
         sc1, sc2, sc3 = st.columns(3)
-        sc1.metric("Status", rec.get("status", "?"))
-        sc2.metric("Task", rec.get("task_key", "?"))
-        sc3.metric("Requester", rec.get("requester", "?"))
+        sc1.metric(t("hitl.metric.status"),    rec.get("status", "?"))
+        sc2.metric(t("hitl.metric.task"),      rec.get("task_key", "?"))
+        sc3.metric(t("hitl.metric.requester"), rec.get("requester", "?"))
 
-        with st.expander("📦 Payload", expanded=True):
+        with st.expander(t("hitl.payload"), expanded=True):
             st.json(rec.get("payload", {}))
 
         if rec.get("status") == "pending":
-            st.markdown("### ✅ Decide")
-            reviewer = st.text_input("Reviewer name", value="compliance_officer")
-            comment = st.text_area("Comment", height=80)
+            st.markdown(f"### {t('hitl.decide')}")
+            reviewer = st.text_input(t("hitl.reviewer"), value="compliance_officer")
+            comment = st.text_area(t("hitl.comment"), height=80)
             a, b = st.columns(2)
-            if a.button("✅ Approve", type="primary", use_container_width=True):
+            if a.button(t("common.approve"), type="primary", use_container_width=True):
                 decide_hitl(rec["id"], approved=True, reviewer=reviewer, comment=comment)
-                st.success("Approved.")
+                st.success(t("hitl.approved_ok"))
                 st.rerun()
-            if b.button("❌ Reject", use_container_width=True):
+            if b.button(t("common.reject"), use_container_width=True):
                 decide_hitl(rec["id"], approved=False, reviewer=reviewer, comment=comment)
-                st.error("Rejected.")
+                st.error(t("hitl.rejected_ok"))
                 st.rerun()
         else:
             st.success(
-                f"Decided **{rec.get('decision')}** by `{rec.get('decided_by')}` "
-                f"at `{rec.get('decided_at')}`.\n\nComment: {rec.get('comment') or '—'}"
+                t(
+                    "hitl.done",
+                    decision=rec.get("decision"),
+                    by=rec.get("decided_by"),
+                    at=rec.get("decided_at"),
+                    comment=rec.get("comment") or "—",
+                )
             )

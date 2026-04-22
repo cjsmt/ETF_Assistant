@@ -9,15 +9,15 @@ import streamlit as st
 
 from agent.patterns.rag import rebuild_rag_index, search_research_library
 from frontend._bootstrap import DOCS_DIR
+from frontend.i18n import t
 
-st.set_page_config(page_title="RAG Library", page_icon="📚", layout="wide")
-st.title("📚 Research Library — Pattern 14 (RAG)")
-st.caption("Semantic search over the internal thinking framework, architecture doc, and business model.")
+st.title(t("rag.title"))
+st.caption(t("rag.caption"))
 
 col_search, col_admin = st.columns([3, 1])
 
 with col_admin:
-    st.markdown("### 🔧 Index")
+    st.markdown(f"### {t('rag.index')}")
     files = []
     for root, _, names in os.walk(DOCS_DIR):
         if "rag_index" in root:
@@ -25,30 +25,30 @@ with col_admin:
         for n in names:
             if n.lower().endswith((".md", ".txt")):
                 files.append(os.path.relpath(os.path.join(root, n), DOCS_DIR))
-    st.caption(f"Source files ({len(files)}):")
+    st.caption(t("rag.index.files", n=len(files)))
     for f in files:
         st.markdown(f"- `{f}`")
-    if st.button("🔁 Rebuild index", use_container_width=True):
-        with st.spinner("Re-embedding documents…"):
+    if st.button(t("rag.index.rebuild"), use_container_width=True):
+        with st.spinner(t("rag.index.rebuilding")):
             result = rebuild_rag_index()
-        st.success(f"Index rebuilt · {result}")
+        st.success(t("rag.index.rebuilt", info=result))
 
 with col_search:
-    st.markdown("### 🔎 Search")
+    st.markdown(f"### {t('rag.search')}")
     query = st.text_input(
-        "Ask a question",
-        value="什么是 smart money 因子？",
-        placeholder="e.g. 如何划分四象限？ / 业务模式是什么？",
+        t("rag.ask"),
+        value=t("rag.ask.default"),
+        placeholder=t("rag.ask.placeholder"),
     )
-    k = st.slider("Top-k chunks", min_value=1, max_value=10, value=4)
+    k = st.slider(t("rag.topk"), min_value=1, max_value=10, value=4)
 
     if query:
-        with st.spinner("Retrieving…"):
+        with st.spinner(t("rag.retrieving")):
             results = search_research_library(query, k=k, thread_id="rag_page")
         if not results:
-            st.warning("No chunks found. Try rebuilding the index on the right.")
+            st.warning(t("rag.no_chunks"))
         else:
-            st.success(f"{len(results)} chunks retrieved.")
+            st.success(t("rag.n_chunks", n=len(results)))
             for i, c in enumerate(results, 1):
                 with st.expander(
                     f"[{i}] {c.source} · score={c.score:.4f}", expanded=(i == 1)

@@ -7,32 +7,48 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 
+from frontend.i18n import t
 from tools.backtest_tools import run_backtest
 
-st.set_page_config(page_title="Backtest Lab", page_icon="📈", layout="wide")
-st.title("📈 Backtest Lab")
-st.caption("Run monthly/weekly rebalance backtests. (Pattern 3 Parallelization is demoed below.)")
+st.title(t("bt.title"))
+st.caption(t("bt.caption"))
+
+MARKET_LABELS = {
+    "a_share": t("common.market.a_share"),
+    "hk":      t("common.market.hk"),
+    "us":      t("common.market.us"),
+}
+FREQ_LABELS = {
+    "monthly": t("bt.title.monthly"),
+    "weekly":  t("bt.title.weekly"),
+}
 
 with st.sidebar:
-    st.header("Parameters")
-    market = st.selectbox("Market", ["a_share", "hk", "us"], index=0)
+    st.header(t("bt.sidebar.header"))
+    market = st.selectbox(
+        t("common.market"),
+        options=list(MARKET_LABELS.keys()),
+        format_func=lambda k: MARKET_LABELS[k],
+        index=0,
+    )
     today = datetime.now()
     default_start = (today - timedelta(days=730)).strftime("%Y-%m-%d")
     default_end = today.strftime("%Y-%m-%d")
-    start_date = st.text_input("Start date", value=default_start)
-    end_date = st.text_input("End date", value=default_end)
+    start_date = st.text_input(t("bt.start"), value=default_start)
+    end_date = st.text_input(t("bt.end"), value=default_end)
     freqs = st.multiselect(
-        "Rebalance freqs (run in parallel)",
-        ["monthly", "weekly"],
-        default=["monthly", "weekly"],
+        t("bt.freqs"),
+        options=list(FREQ_LABELS.keys()),
+        default=list(FREQ_LABELS.keys()),
+        format_func=lambda k: FREQ_LABELS[k],
     )
-    run = st.button("🏁 Run backtest(s) in parallel", use_container_width=True, type="primary")
+    run = st.button(t("bt.run"), use_container_width=True, type="primary")
 
 if run:
     import concurrent.futures as _f
 
     results: dict[str, str] = {}
-    with st.spinner(f"Running {len(freqs)} backtests in parallel…"):
+    with st.spinner(t("bt.running", n=len(freqs))):
         with _f.ThreadPoolExecutor(max_workers=max(len(freqs), 1)) as pool:
             futures = {
                 pool.submit(
@@ -59,7 +75,7 @@ if results:
     cols = st.columns(len(results))
     for col, (freq, out) in zip(cols, results.items()):
         with col:
-            st.markdown(f"### {freq.title()} rebalance")
+            st.markdown(f"### {FREQ_LABELS.get(freq, freq.title())}")
             st.code(out[:6000], language="text")
 else:
-    st.info("Select frequencies on the left and click **Run backtest(s)**.")
+    st.info(t("bt.wait"))

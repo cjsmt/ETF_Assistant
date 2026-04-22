@@ -20,3 +20,11 @@ TRACE_DIR = os.path.join(_ROOT, "traces")
 HITL_DIR = os.path.join(_ROOT, "traces", "hitl")
 MEMORY_DIR = os.path.join(_ROOT, "traces", "memory")
 DOCS_DIR = os.path.join(_ROOT, "docs")
+
+# Ensure session-state language key exists before any page accesses it.
+try:
+    from frontend.i18n import init_lang  # noqa: E402
+
+    init_lang()
+except Exception:
+    pass
