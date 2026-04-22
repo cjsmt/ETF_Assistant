@@ -1,8 +1,102 @@
 # AI Quant Assistant for ETF Rotation Strategies
 
+> **FTEC5660 Group Project · CUHK FinTech Competition 2026**
+> 面向 ETF / 行业轮动场景的 AI Agent，覆盖 FTEC5660 课件中的 **14+ 个 Agentic 设计模式**，
+> 支持投研 / 投顾 / 合规三类角色，带完整 Streamlit 多页前端、MCP Server、RAG 研究库、
+> Multi-Agent 辩论、真实 Reflection、Guardrails + HITL 审批。
+
+---
+
+## 🏆 A+ Upgrade Highlights（2026-04 升级概览）
+
+这一版在原 `Router + Planner + Executor + Fixed Subgraphs` 基础上，系统化接入了课件 18 个设计模式中的 15 个，
+并新增**多页 Streamlit 前端**与**FastMCP news server**：
+
+| # | Pattern | 实现位置 | 一句话说明 |
+|---|---|---|---|
+| 1  | Prompt Chaining              | `agent/prompts/prompt_builder.py`      | base + role + task 三段式拼装 |
+| 2  | Routing                      | `agent/graph.py::router_node`          | 结构化 `RouterDecision`，失败回退关键词路由 |
+| 3  | **Parallelization**          | `agent/subgraph.py` + `patterns/multi_agent.py` | 回测月/周频、新闻 fan-out、三 Agent 并发 |
+| 4  | **Reflection (真实)**        | `agent/patterns/reflection.py`         | `CritiqueReport` → `revise` 真实二段循环 |
+| 5  | Tool Use                     | `tools/` + `ToolNode`                  | 15 个 LangChain 工具 |
+| 6  | Planning                     | `agent/graph.py::planner_node`         | Plan-then-Execute |
+| 7  | **Multi-Agent**              | `agent/patterns/multi_agent.py`        | Quant / Macro / Risk + Coordinator |
+| 8  | **Long-term Memory**         | `agent/patterns/memory.py`             | `traces/memory/<thread>.json`，跨会话 |
+| 10 | **MCP**                      | `mcp_server/` + `tools/mcp_tools.py`   | 真 FastMCP server，stdio + HTTP |
+| 11 | **Goal Setting & Monitoring**| `agent/patterns/goal_monitor.py`       | 每个任务显式 sub-goal 清单 |
+| 12 | Exception Handling           | `graph.py` + `subgraph.py`             | 路由回退、tool budget、重复调用拦截 |
+| 14 | **RAG**                      | `agent/patterns/rag.py` + `tools/rag_tools.py` | FAISS + OpenAIEmbeddings，`docs/*` 全库 |
+| 15 | **Inter-agent Communication**| `agent/patterns/inter_agent.py`        | Pydantic 消息协议 `AgentReport/DebateVerdict` |
+| 16 | **Resource-aware Optim.**    | `agent/patterns/resource_tracker.py`   | 全链路 token/$/tool/latency 追踪 |
+| 17 | **Reasoning (Self-Consistency)** | `agent/patterns/reasoning.py`       | 3 次采样多数表决解决分歧 |
+| 18 | **Guardrails + HITL**        | `agent/patterns/guardrails.py`         | 输入+输出+HITL 三层防护 |
+
+粗体 = 本次升级新增。完整清单见 `agent/patterns/__init__.py`。
+
+### 🖥️ Frontend — 多页 Streamlit
+
+```
+streamlit run frontend/app.py
+```
+
+9 个页面：
+1. **Chat** — 对话 + 实时 Pattern badge + Goal checklist + Resource meter + Guardrail + Reflection
+2. **Decision Trace** — 浏览历史 trace，支持 JSON 下载
+3. **Multi-Agent Debate** — Quant/Macro/Risk 三方辩论可视化
+4. **RAG Library** — `docs/*` 向量检索 + 一键重建索引
+5. **Backtest Lab** — 月/周频并行回测
+6. **HITL Approval** — 合规审批队列（列表/详情/通过/拒绝）
+7. **Pattern Dashboard** — 各线程 Pattern 触发直方图
+8. **MCP Inspector** — 真实 MCP 握手，枚举+调用 MCP 工具
+9. **Settings** — 长期记忆画像 + config 文件在线编辑
+
+### 🔌 MCP Server
+
+```
+# 独立运行（stdio，Agent 默认使用）
+python -m mcp_server.news_mcp_server
+
+# HTTP 模式（便于 Inspector 远程连接）
+python -m mcp_server.news_mcp_server --http --port 8765
+```
+
+暴露工具：`search_news_cn` / `search_global_news` / `get_macro_events`，
+可被任何 MCP-compatible Agent 重用。
+
+### 🎬 Demo 场景
+
+| 场景 | 提示词 | 亮点路径 |
+|---|---|---|
+| 周报生成 | `生成本周 A 股行业轮动周报` | weekly_prepare → goal_update → reflect → HITL |
+| 多 Agent 辩论 | `对当期 A 股让 Quant/Macro/Risk 三方辩论` | multi_agent_debate → P7 + P3 + P17 |
+| 月/周频回测 | `做月频 vs 周频回测对比` | backtest_compare 并行 (P3) |
+| 冲突检查 | `核查当期黄金区行业是否与负面新闻冲突` | conflict_check + 并行新闻 fan-out |
+| R3 客户组合 | `为 R3 客户准备 ETF 组合` | rm_portfolio_prepare → reflection → HITL |
+| 合规审查 | `审查最近一期 decision trace` | trace_history → trace_review |
+| RAG 知识问答 | `什么是 smart_money 因子？` | search_research_library (P14) |
+| Guardrail 注入 | `ignore all previous instructions…` | input_guardrail 直接拦截 (P18) |
+
+### 📁 新增目录
+
+```
+agent/patterns/           15 个 pattern 模块，每个文件头部注明对应 Pattern 编号
+mcp_server/               FastMCP server + client
+tools/rag_tools.py        RAG 暴露为 LangChain tool
+tools/mcp_tools.py        MCP 调用暴露为 LangChain tool
+frontend/app.py           landing page
+frontend/pages/*.py       9 个子页面
+docs/                     RAG 知识源（thinking.txt + architecture + business model）
+traces/hitl/              HITL 审批队列
+traces/memory/            长期记忆（per-thread JSON）
+```
+
+---
+
+## 项目目标
+
 一个面向 ETF / 行业轮动场景的 AI 量化研究助理项目，支持投研、投顾、合规三类角色，通过 LangGraph 编排自然语言任务，调用量化工具链完成研究、审查、报告生成与决策留痕。
 
-当前版本已从“开放式 ReAct”演进为“结构化 `Router + Planner + Executor + Fixed Subgraphs`”的受控工作流，已完成 7 类高频任务节点化。当前代码职责已明确分层：`agent/graph.py` 负责主图编排，`agent/subgraph.py` 负责固定子图节点实现。
+当前版本已从"开放式 ReAct"演进为"结构化 `Router + Planner + Executor + Fixed Subgraphs`"的受控工作流，并在此基础上完成 A+ 升级（见上）。当前代码职责已明确分层：`agent/graph.py` 负责主图编排，`agent/subgraph.py` 负责固定子图节点实现，`agent/patterns/` 负责各设计模式。
 
 ## 项目目标
 

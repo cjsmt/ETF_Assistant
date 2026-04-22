@@ -1,3 +1,4 @@
+import concurrent.futures as _futures
 import json
 import os
 import re
@@ -5,12 +6,16 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Literal
 
 from agent.state import AgentState
+from agent.patterns.pattern_log import log_pattern_use
+from agent.patterns.goal_monitor import init_goal_state, update_goal_progress
+from agent.patterns.multi_agent import DebateInputs, run_debate_parallel
+from agent.patterns.memory import memory_context_snippet
 from tools.backtest_tools import run_backtest
 from tools.data_tools import get_market_data
 from tools.factor_tools import calc_factors_df
 from tools.filter_tools import get_ic_overlay_config
 from tools.mapping_tools import map_etf
-from tools.news_tools import search_news_cn
+from tools.news_tools import search_news_cn, get_macro_events
 from tools.report_tools import generate_report
 from tools.scoring_tools import score_quadrant_df
 from tools.trace_tools import TRACE_DIR, get_decision_history, save_decision_trace
@@ -24,6 +29,7 @@ SubgraphRoute = Literal[
     "rm_explain",
     "rm_portfolio_prepare",
     "compliance_risk",
+    "multi_agent_debate",
     "executor",
     "finalize",
 ]
@@ -37,6 +43,7 @@ TASK_ROUTE_MAP: dict[str, SubgraphRoute] = {
     "rm_explain_performance": "rm_explain",
     "rm_client_portfolio": "rm_portfolio_prepare",
     "compliance_risk_check": "compliance_risk",
+    "research_multi_agent_debate": "multi_agent_debate",
 }
 SUBGRAPH_EDGE_MAP = {route: route for route in TASK_ROUTE_MAP.values()}
 SUBGRAPH_EDGE_MAP.update({"executor": "executor", "finalize": "finalize"})
@@ -433,30 +440,44 @@ def trace_review_node(state: AgentState):
 
 
 def backtest_compare_node(state: AgentState):
+    """Pattern 3: Parallelization — run monthly + weekly backtests concurrently."""
     market = state.get("market", "a_share")
+    thread_id = state.get("thread_id", "default")
     start_date, end_date = _date_range(days=730)
-    _log_node("backtest_compare", f"开始参数回测对比，market={market}，区间={start_date}~{end_date}")
-    _log_step("backtest_compare", 1, 2, "执行月频回测")
-    monthly = _safe_invoke_tool(
-        run_backtest,
-        {"market": market, "start_date": start_date, "end_date": end_date, "rebalance_freq": "monthly"},
+    _log_node("backtest_compare", f"开始参数回测对比（并行），market={market}，区间={start_date}~{end_date}")
+    log_pattern_use(
+        thread_id, 3, "Parallelization", "backtest_compare", "fan_out monthly+weekly"
     )
-    _log_step("backtest_compare", 2, 2, "执行周频回测")
-    weekly = _safe_invoke_tool(
-        run_backtest,
-        {"market": market, "start_date": start_date, "end_date": end_date, "rebalance_freq": "weekly"},
-    )
-    _log_node("backtest_compare", "回测对比完成")
+
+    freqs = [("monthly", "月频回测"), ("weekly", "周频回测")]
+    results: dict[str, str] = {}
+    with _futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {
+            pool.submit(
+                _safe_invoke_tool,
+                run_backtest,
+                {"market": market, "start_date": start_date, "end_date": end_date, "rebalance_freq": freq},
+            ): freq
+            for freq, _ in freqs
+        }
+        for fut in _futures.as_completed(futures):
+            freq = futures[fut]
+            results[freq] = fut.result()
+            _log_node("backtest_compare", f"{freq} 回测完成")
+
+    monthly, weekly = results.get("monthly", ""), results.get("weekly", "")
+    _log_node("backtest_compare", "回测对比完成（并行）")
     payload = {
         "market": market,
         "start_date": start_date,
         "end_date": end_date,
         "monthly": monthly,
         "weekly": weekly,
+        "executed_in_parallel": True,
     }
     return {
         "workflow_context": _concat_sections(
-            "## 固定子图：参数回测对比（research_backtest_compare）",
+            "## 固定子图：参数回测对比（research_backtest_compare, 并行执行）",
             f"- 市场：{market}\n- 区间：{start_date} 至 {end_date}",
             "### Monthly 回测结果\n" + monthly,
             "### Weekly 回测结果\n" + weekly,
@@ -482,13 +503,25 @@ def conflict_check_node(state: AgentState):
     quadrant_df = score_quadrant_df(factor_df)
     golden = quadrant_df[quadrant_df["quadrant"] == "黄金配置区"]["industry"].head(3).tolist()
     overlay_text = _safe_invoke_tool(get_ic_overlay_config, {"market": market})
-    _log_step("conflict_check", 3, 3, f"核验重点行业新闻，共 {len(golden)} 个")
-    news_parts = []
-    for industry in golden:
-        _log_node("conflict_check", f"正在核验新闻：{industry}")
-        news = _safe_invoke_tool(search_news_cn, {"keywords": industry, "limit": 5})
-        news_parts.append(f"#### {industry}\n{news}")
-    _log_node("conflict_check", "信号冲突检查完成")
+    _log_step("conflict_check", 3, 3, f"核验重点行业新闻（并行），共 {len(golden)} 个")
+    thread_id = state.get("thread_id", "default")
+    if golden:
+        log_pattern_use(
+            thread_id, 3, "Parallelization", "conflict_check", f"fan_out news for {len(golden)} sectors"
+        )
+    news_parts: list[str] = [""] * len(golden)
+    with _futures.ThreadPoolExecutor(max_workers=min(5, max(len(golden), 1))) as pool:
+        futures = {
+            pool.submit(_safe_invoke_tool, search_news_cn, {"keywords": ind, "limit": 5}): idx
+            for idx, ind in enumerate(golden)
+        }
+        for fut in _futures.as_completed(futures):
+            idx = futures[fut]
+            try:
+                news_parts[idx] = f"#### {golden[idx]}\n{fut.result()}"
+            except Exception as exc:
+                news_parts[idx] = f"#### {golden[idx]}\nerror: {exc}"
+    _log_node("conflict_check", "信号冲突检查完成（并行）")
 
     payload = {
         "market": market,
@@ -646,6 +679,113 @@ def compliance_risk_node(state: AgentState):
     }
 
 
+def multi_agent_debate_node(state: AgentState):
+    """Pattern 7 + 15 + 17: Multi-Agent Debate with structured messages & self-consistency.
+
+    Three specialists (Quant/Macro/Risk) debate in parallel, a Coordinator
+    resolves conflicts using self-consistency voting.
+    """
+    market = state.get("market", "a_share")
+    thread_id = state.get("thread_id", "default")
+    start_date, end_date = _date_range(days=365)
+
+    _log_step("multi_agent_debate", 1, 4, "准备证据 — 计算因子")
+    factor_df = calc_factors_df(market=market, start_date=start_date, end_date=end_date)
+    if factor_df.empty:
+        return {
+            "workflow_context": "## 固定子图：多 Agent 辩论\n未计算出有效因子，无法进行辩论。",
+            "stop_reason": "多 Agent 辩论缺少因子数据。",
+        }
+
+    _log_step("multi_agent_debate", 2, 4, "准备证据 — 四象限 + 观察池 + 宏观")
+    quadrant_df = score_quadrant_df(factor_df)
+    _, quadrant_summary = _summarize_quadrants(quadrant_df)
+    factor_summary = factor_df.head(10).to_string(index=False)
+    overlay_text = _safe_invoke_tool(get_ic_overlay_config, {"market": market})
+    observation_pool, veto_list = _parse_overlay_text(overlay_text)
+    observation_text = json.dumps(observation_pool, ensure_ascii=False, indent=2)
+    veto_text = "; ".join(veto_list) if veto_list else "无"
+
+    # Macro events & news in parallel
+    with _futures.ThreadPoolExecutor(max_workers=2) as pool:
+        fut_macro = pool.submit(_safe_invoke_tool, get_macro_events, {})
+        golden = quadrant_df[quadrant_df["quadrant"] == "黄金配置区"]["industry"].head(4).tolist()
+        fut_news = pool.submit(
+            _safe_invoke_tool,
+            search_news_cn,
+            {"keywords": "、".join(golden[:3]) if golden else market, "limit": 8},
+        )
+        macro_events = fut_macro.result()
+        news_text = fut_news.result()
+
+    _log_step("multi_agent_debate", 3, 4, "运行 Quant/Macro/Risk 三 Agent（并行）")
+    user_question = state.get("user_input", "")
+    debate_inputs = DebateInputs(
+        market=market,
+        factor_summary=factor_summary,
+        quadrant_summary=quadrant_summary,
+        observation_pool=observation_text,
+        veto_list_text=veto_text,
+        macro_events=macro_events,
+        news_text=news_text,
+        client_risk_level=state.get("client_risk_level"),
+        user_question=user_question,
+    )
+    model = os.getenv("OPENAI_MODEL", "deepseek-v3.2")
+    debate_result = run_debate_parallel(
+        debate_inputs, thread_id=thread_id, model=model
+    )
+
+    _log_step("multi_agent_debate", 4, 4, "协调者聚合完成，生成叙事")
+    verdict = debate_result["verdict"]
+    narrative = verdict.get("narrative", "")
+    recommended = verdict.get("recommended_sectors", [])
+    vetoed = verdict.get("vetoed_sectors", [])
+    disagreements = verdict.get("disagreements", [])
+
+    debate_md_lines = [
+        "## 固定子图：多 Agent 辩论（research_multi_agent_debate）",
+        f"- 市场：{market}  / 客户风险：{state.get('client_risk_level') or 'N/A'}",
+        f"- 推荐超配：{', '.join(recommended) if recommended else '无'}",
+        f"- 一致否决：{', '.join(vetoed) if vetoed else '无'}",
+        f"- 分歧数：{len(disagreements)}",
+        "",
+        "### 三 Agent 报告摘要",
+    ]
+    for role, rep in debate_result["reports"].items():
+        debate_md_lines.append(
+            f"- **{role}** — {rep.get('summary', '')[:220]}"
+        )
+        for v in rep.get("votes", [])[:5]:
+            debate_md_lines.append(
+                f"  - {v['sector']}: {v['stance']} (conf={v['confidence']:.2f}) — {v['rationale'][:100]}"
+            )
+    if disagreements:
+        debate_md_lines.append("\n### 分歧与解决")
+        for d in disagreements[:10]:
+            pro = ", ".join(d.get("agents_pro", []))
+            con = ", ".join(d.get("agents_con", []))
+            debate_md_lines.append(
+                f"- **{d['sector']}**: 支持={pro or '无'} / 反对={con or '无'} → {d.get('resolution', '')}"
+            )
+    debate_md_lines.append("\n### 协调者叙事\n" + narrative)
+
+    payload = {
+        "market": market,
+        "client_risk_level": state.get("client_risk_level"),
+        "debate": debate_result,
+        "recommended_sectors": recommended,
+        "vetoed_sectors": vetoed,
+        "factor_summary": factor_summary,
+    }
+    return {
+        "workflow_context": "\n".join(debate_md_lines),
+        "task_payload": payload,
+        "debate_result": debate_result,
+        "tool_call_count": _bump_tool_count(state, 5),
+    }
+
+
 SUBGRAPH_NODES: dict[str, Callable[[AgentState], dict[str, Any]]] = {
     "weekly_prepare": weekly_prepare_node,
     "weekly_persist": weekly_persist_node,
@@ -657,6 +797,7 @@ SUBGRAPH_NODES: dict[str, Callable[[AgentState], dict[str, Any]]] = {
     "rm_portfolio_prepare": rm_portfolio_prepare_node,
     "rm_portfolio_persist": rm_portfolio_persist_node,
     "compliance_risk": compliance_risk_node,
+    "multi_agent_debate": multi_agent_debate_node,
 }
 
 

@@ -1,10 +1,13 @@
 .env
+.env.local
 __pycache__/
 *.pyc
 .python-version
 venv/
 .venv/
 *.egg-info/
+
+# Runtime traces (regenerated per run)
 traces/*.json
 traces/**/*.json
 traces/**/agent_response.txt
@@ -12,8 +15,23 @@ traces/**/*.html
 traces/**/*.docx
 traces/**/*.pdf
 traces/**/*.md
+
+# Local cache
 data/cache/
 .DS_Store
-thinking.txt
-AGENT_ARCHITECTURE.md
-Competition_Business_Model_Value_Proposition.md
+
+# Legacy notes at repo root only (NOT docs/)
+/thinking.txt
+/AGENT_ARCHITECTURE.md
+/Competition_Business_Model_Value_Proposition.md
+
+# Long-term memory & HITL requests (per-user state, not source)
+memory_store/
+hitl_requests/
+
+# RAG vector index (rebuild locally via frontend or scripts)
+docs/rag_index/
+
+# IDE / OS
+.idea/
+.vscode/
