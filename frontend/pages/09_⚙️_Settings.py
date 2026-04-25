@@ -9,53 +9,53 @@ import streamlit as st
 
 from agent.patterns.memory import list_all_threads, load_memory, save_memory, update_profile
 from frontend._bootstrap import PROJECT_ROOT
+from frontend.i18n import t
 
-st.set_page_config(page_title="Settings", page_icon="⚙️", layout="wide")
-st.title("⚙️ Settings")
+st.title(t("cfg.title"))
 
-tab_mem, tab_overlay = st.tabs(["🧠 Memory (Pattern 8)", "📋 IC Overlay config"])
+tab_mem, tab_overlay = st.tabs([t("cfg.tab.memory"), t("cfg.tab.overlay")])
 
 with tab_mem:
-    st.caption("Inspect and edit the long-term memory stored per thread.")
+    st.caption(t("cfg.mem.caption"))
     threads = list_all_threads()
     if not threads:
-        st.info("No memory threads yet.")
+        st.info(t("cfg.mem.empty"))
     else:
-        thread = st.selectbox("Thread", threads)
+        thread = st.selectbox(t("cfg.mem.thread"), threads)
         mem = load_memory(thread)
-        st.markdown("### Profile")
+        st.markdown(f"### {t('cfg.mem.profile')}")
         c1, c2, c3 = st.columns(3)
         risk = c1.selectbox(
-            "Risk level",
+            t("cfg.mem.risk"),
             ["", "R1", "R2", "R3", "R4", "R5"],
             index=(["", "R1", "R2", "R3", "R4", "R5"].index(mem.profile.risk_level or "")),
         )
         market = c2.selectbox(
-            "Preferred market",
+            t("cfg.mem.market"),
             ["", "a_share", "hk", "us"],
             index=(["", "a_share", "hk", "us"].index(mem.profile.preferred_market or "")),
         )
-        note = c3.text_input("Note", value=mem.profile.note)
-        if st.button("💾 Save profile"):
+        note = c3.text_input(t("cfg.mem.note"), value=mem.profile.note)
+        if st.button(t("cfg.mem.save_profile")):
             update_profile(thread, risk_level=risk or None, preferred_market=market or None, note=note)
-            st.success("Saved.")
+            st.success(t("cfg.mem.saved"))
 
-        st.markdown("### Query history")
+        st.markdown(f"### {t('cfg.mem.history')}")
         import pandas as pd
 
         if mem.query_history:
             st.dataframe(pd.DataFrame(mem.query_history[-30:]), use_container_width=True, hide_index=True)
         else:
-            st.caption("No history yet.")
+            st.caption(t("cfg.mem.no_history"))
 
-        st.markdown("### Task counter")
+        st.markdown(f"### {t('cfg.mem.tasks')}")
         if mem.task_counter:
             st.bar_chart(mem.task_counter)
         else:
-            st.caption("No tasks counted yet.")
+            st.caption(t("cfg.mem.no_tasks"))
 
 with tab_overlay:
-    st.caption("Edit the subjective observation pool + negative list that the Risk agent enforces.")
+    st.caption(t("cfg.overlay.caption"))
     config_dir = os.path.join(PROJECT_ROOT, "config")
     editable = [
         "subjective_pool.yaml",
@@ -67,14 +67,14 @@ with tab_overlay:
     ]
     available = [f for f in editable if os.path.isfile(os.path.join(config_dir, f))]
     if not available:
-        st.warning(f"No config files found under `{config_dir}`.")
+        st.warning(t("cfg.overlay.none", path=config_dir))
     else:
-        picked = st.selectbox("File", available)
+        picked = st.selectbox(t("cfg.overlay.file"), available)
         path = os.path.join(config_dir, picked)
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
         edited = st.text_area(picked, value=content, height=500)
-        if st.button(f"💾 Save {picked}"):
+        if st.button(t("cfg.overlay.save", name=picked)):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(edited)
-            st.success(f"Saved {picked}. The agent will pick up changes on the next run.")
+            st.success(t("cfg.overlay.saved", name=picked))

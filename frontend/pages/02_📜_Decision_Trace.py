@@ -9,10 +9,10 @@ import os
 import streamlit as st
 
 from frontend._bootstrap import TRACE_DIR
+from frontend.i18n import t
 
-st.set_page_config(page_title="Decision Trace", page_icon="📜", layout="wide")
-st.title("📜 Decision Trace Explorer")
-st.caption("Browse and inspect every audit-grade trace written by the agent.")
+st.title(t("trace.title"))
+st.caption(t("trace.caption"))
 
 
 def list_traces() -> list[dict]:
@@ -51,11 +51,11 @@ traces = list_traces()
 left, right = st.columns([1, 2])
 
 with left:
-    st.markdown(f"### {len(traces)} traces on disk")
+    st.markdown(f"### {t('trace.count', n=len(traces))}")
     if not traces:
-        st.info("No traces yet. Run the agent first.")
+        st.info(t("trace.none"))
     idx = st.radio(
-        "Select a trace",
+        t("trace.select"),
         options=list(range(len(traces))),
         format_func=lambda i: (
             f"{traces[i]['decision_date']} · {traces[i]['market']} · "
@@ -67,16 +67,16 @@ with left:
 with right:
     if traces and idx is not None:
         trace = traces[idx]["trace"]
-        st.markdown(f"### 🗂️ {traces[idx]['file']}")
+        st.markdown(f"### {traces[idx]['file']}")
         st.caption(f"Path: `{traces[idx]['path']}`")
 
         colA, colB, colC = st.columns(3)
-        colA.metric("Market", trace.get("market", "-"))
-        colB.metric("Approval", trace.get("approval_status", "-"))
-        colC.metric("Version", trace.get("config_version", "-"))
+        colA.metric(t("trace.metric.market"),   trace.get("market", "-"))
+        colB.metric(t("trace.metric.approval"), trace.get("approval_status", "-"))
+        colC.metric(t("trace.metric.version"),  trace.get("config_version", "-"))
 
         if trace.get("portfolio_recommendation"):
-            st.markdown("#### 📊 Portfolio recommendation")
+            st.markdown(f"#### {t('trace.section.portfolio')}")
             import pandas as pd
 
             for layer, rows in trace["portfolio_recommendation"].items():
@@ -87,20 +87,20 @@ with right:
                 st.dataframe(df, use_container_width=True, hide_index=True)
 
         if trace.get("quadrant_distribution"):
-            st.markdown("#### 🧭 Quadrant distribution")
+            st.markdown(f"#### {t('trace.section.quadrant')}")
             qd = trace["quadrant_distribution"]
             for k, v in qd.items():
                 st.markdown(f"- **{k}** ({len(v)}): {', '.join(v[:12])}")
 
         if trace.get("risk_checks"):
-            st.markdown("#### ⚠️ Risk checks")
+            st.markdown(f"#### {t('trace.section.risk')}")
             st.json(trace["risk_checks"])
 
-        with st.expander("🔎 Raw JSON"):
+        with st.expander(t("trace.raw_json")):
             st.json(trace)
 
         st.download_button(
-            "⬇️ Download trace JSON",
+            t("trace.download"),
             data=json.dumps(trace, ensure_ascii=False, indent=2),
             file_name=traces[idx]["file"],
             mime="application/json",

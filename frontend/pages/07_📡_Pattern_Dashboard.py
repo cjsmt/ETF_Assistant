@@ -7,21 +7,21 @@ import pandas as pd
 import streamlit as st
 
 from agent.patterns.pattern_log import PATTERN_LOG
+from frontend.i18n import t
 
-st.set_page_config(page_title="Pattern Dashboard", page_icon="📡", layout="wide")
-st.title("📡 Design Pattern Dashboard")
-st.caption("Per-thread tally of which Agentic Design Patterns fired during each run.")
+st.title(t("pd.title"))
+st.caption(t("pd.caption"))
 
 threads = list(PATTERN_LOG._events.keys())  # type: ignore[attr-defined]
 if not threads:
-    st.info("No pattern events yet. Go to the Chat page and send a request.")
+    st.info(t("pd.empty"))
     st.stop()
 
-thread = st.selectbox("Thread", options=threads)
+thread = st.selectbox(t("pd.thread"), options=threads)
 events = PATTERN_LOG.get(thread)
 summary = PATTERN_LOG.summary(thread)
 
-st.metric("Pattern events recorded", len(events))
+st.metric(t("pd.metric.events"), len(events))
 
 pattern_names = {
     1: "Prompt Chaining", 2: "Routing", 3: "Parallelization", 4: "Reflection",
@@ -39,6 +39,6 @@ df = pd.DataFrame(
 if not df.empty:
     st.bar_chart(df.set_index("pattern")["count"])
 
-with st.expander("🧾 Raw event log"):
+with st.expander(t("pd.raw")):
     df_events = pd.DataFrame(events)
     st.dataframe(df_events, use_container_width=True, hide_index=True)

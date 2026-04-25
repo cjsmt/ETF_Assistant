@@ -37,37 +37,62 @@ from agent.patterns.reasoning import self_consistency_vote
 
 # ----------------------------- Specialist prompts -----------------------------
 
-QUANT_SYSTEM = """You are the QUANT specialist in a multi-agent ETF advisory debate.
+# Base (language-neutral) system prompts. A locale-specific language-instruction
+# block is appended at invocation time, so the same model can serve both
+# English- and Chinese-speaking users without prompt duplication.
 
-You only look at QUANTITATIVE evidence: factor scores (ma_score, momentum,
-trend_score, consensus_score) and the four-quadrant classification.
+QUANT_SYSTEM_BASE = """You are the QUANT specialist in a multi-agent ETF advisory debate.
+
+You only look at QUANTITATIVE evidence: factor scores and the four-quadrant
+classification.
+
+Available factors (ranked by information content):
+- `ma_score`: moving-average trend strength (5 levels: -2/-1/0/+1/+2)
+- `momentum`: 12-month momentum with recent-month skip (continuous)
+- `trend_score`: composite = weighted(ma_rank, mom_rank) -- PRIMARY signal
+- `consensus_score`: PLACEHOLDER ONLY in current build. Under-lying sub-factors
+  (etf_flow_contrarian / smart_money / volatility_convergence) are not yet
+  wired to real data sources, so consensus_score degenerates to a constant
+  near 0.5 across sectors. **IGNORE consensus_score when ranking**; base your
+  votes on `ma_score`, `momentum`, and `trend_score` instead.
 
 Rules:
-- Vote 'overweight' only on sectors in the Golden zone with top trend_score.
+- Vote 'overweight' on Golden-zone sectors with top trend_score AND ma_score>=1.
 - Vote 'neutral' on Left-side-watch sectors.
-- Vote 'underweight' on Warning / Garbage zone sectors.
-- NEVER veto a sector — that is the Risk agent's job.
-- Cite factor numbers verbatim in evidences.
-- If data is missing, say so in caveats instead of guessing.
+- Vote 'underweight' on Warning / Garbage zone sectors or sectors with negative ma_score AND momentum.
+- NEVER veto a sector -- that is the Risk agent's job.
+- Cite factor numbers verbatim in evidences (e.g., "ma_score=2, momentum=0.18").
+- If a factor is truly missing, say so in caveats. Do NOT add caveats about consensus_score being constant (this is already known and documented above).
 
 Return your output as a structured AgentReport with role='quant'."""
 
-MACRO_SYSTEM = """You are the MACRO specialist in a multi-agent ETF advisory debate.
+MACRO_SYSTEM_BASE = """You are the MACRO specialist in a multi-agent ETF advisory debate.
 
-You only look at MACRO + NEWS evidence: the observation pool (export/policy/
-defensive chains), macro events, and recent news headlines.
+You look at MACRO + NEWS evidence in the following priority:
+1. Macro events block (may contain sub-sections: 国内宏观快讯 / 宏观主题新闻 / 全球财经新闻)
+2. News snippets block (sector-keyword news)
+3. Observation pool (export/policy/defensive chains) — use as supplemental framing
+4. Veto / negative list — use only as a hard filter, not as primary evidence
 
-Rules:
-- Vote 'overweight' on sectors whose macro logic + news flow are supportive.
-- Vote 'underweight' on sectors facing macro headwinds.
-- Use 'veto' ONLY when there is a hard policy/regulatory block AND you cite a
-  news snippet as evidence.
-- Cite news/snippet content in evidences.
-- If no relevant news is available for a sector, say so in caveats.
+Interpretation rules:
+- If the macro events block contains ANY named sub-section (e.g. 国内宏观快讯,
+  全球财经新闻), treat it as sufficient macro evidence -- DO NOT claim "no
+  macro data" in caveats.
+- Only write a caveat of "no macro evidence" when the macro events text
+  literally says it is empty (e.g. "(国内 + 全球宏观源此刻均返回空...").
+- A sector-keyword news headline is valid macro evidence when it describes a
+  policy, regulatory, monetary, fiscal or geopolitical theme.
+
+Voting rules:
+- 'overweight' on sectors whose macro logic + news flow are supportive.
+- 'underweight' on sectors facing macro headwinds.
+- 'veto' ONLY when there is a hard policy/regulatory block AND you cite a news
+  snippet as evidence.
+- Cite news/snippet content (with a short direct quote) in each vote's evidences.
 
 Return your output as a structured AgentReport with role='macro'."""
 
-RISK_SYSTEM = """You are the RISK specialist in a multi-agent ETF advisory debate.
+RISK_SYSTEM_BASE = """You are the RISK specialist in a multi-agent ETF advisory debate.
 
 You only look at RISK evidence: the IC overlay negative list, ETF liquidity
 and scale thresholds, drawdown limits, and the client's risk level.
@@ -82,7 +107,7 @@ Rules:
 Return your output as a structured AgentReport with role='risk'."""
 
 
-COORDINATOR_SYSTEM = """You are the COORDINATOR of a multi-agent ETF advisory debate.
+COORDINATOR_SYSTEM_BASE = """You are the COORDINATOR of a multi-agent ETF advisory debate.
 
 You receive three structured reports from specialists (Quant, Macro, Risk) and
 must produce a fused DebateVerdict.
@@ -103,6 +128,34 @@ Aggregation rules:
 Output a single DebateVerdict."""
 
 
+_LANG_INSTRUCTIONS = {
+    "en": (
+        "Output language: Write the summary, rationale, caveats and narrative "
+        "in clear professional English. Sector names may stay in their original "
+        "Chinese form (they are domain-specific codes)."
+    ),
+    "zh": (
+        "Output language: 使用简体中文撰写 summary、rationale、caveats 与 narrative。"
+        "行业名保持原始中文。"
+    ),
+}
+
+
+def _with_lang(base_prompt: str, lang: str) -> str:
+    """Append the locale-specific output-language block to a base prompt."""
+    instr = _LANG_INSTRUCTIONS.get(lang, _LANG_INSTRUCTIONS["en"])
+    return f"{base_prompt}\n\n{instr}"
+
+
+# Back-compat aliases — default to English so accidental callers (older code,
+# notebooks, tests) produce English output rather than silently falling back
+# to Chinese. Locale-aware code should build prompts via ``_with_lang``.
+QUANT_SYSTEM       = _with_lang(QUANT_SYSTEM_BASE,       "en")
+MACRO_SYSTEM       = _with_lang(MACRO_SYSTEM_BASE,       "en")
+RISK_SYSTEM        = _with_lang(RISK_SYSTEM_BASE,        "en")
+COORDINATOR_SYSTEM = _with_lang(COORDINATOR_SYSTEM_BASE, "en")
+
+
 # ------------------------------ Specialist LLMs -------------------------------
 
 
@@ -118,6 +171,7 @@ class DebateInputs:
     news_text: str = ""
     client_risk_level: Optional[str] = None
     user_question: str = ""
+    output_language: str = "en"  # "en" | "zh" — follows UI language
 
 
 def _build_llm(model: str | None = None, temperature: float = 0.2) -> ChatOpenAI:
@@ -127,7 +181,7 @@ def _build_llm(model: str | None = None, temperature: float = 0.2) -> ChatOpenAI
 
 def _invoke_specialist(
     role: AgentRole,
-    system_prompt: str,
+    base_prompt: str,
     inputs: DebateInputs,
     model: str | None,
     thread_id: str,
@@ -139,6 +193,7 @@ def _invoke_specialist(
         f"specialist_{role.value}",
         "spawn",
     )
+    system_prompt = _with_lang(base_prompt, inputs.output_language)
     llm = _build_llm(model=model, temperature=0.2).with_structured_output(AgentReport)
 
     shared_context = f"""Market: {inputs.market}
@@ -194,9 +249,9 @@ def run_debate_parallel(
     )
 
     tasks = [
-        (AgentRole.QUANT, QUANT_SYSTEM),
-        (AgentRole.MACRO, MACRO_SYSTEM),
-        (AgentRole.RISK,  RISK_SYSTEM),
+        (AgentRole.QUANT, QUANT_SYSTEM_BASE),
+        (AgentRole.MACRO, MACRO_SYSTEM_BASE),
+        (AgentRole.RISK,  RISK_SYSTEM_BASE),
     ]
     reports: dict[AgentRole, AgentReport] = {}
     with _futures.ThreadPoolExecutor(max_workers=3) as pool:
@@ -342,16 +397,33 @@ def _aggregate(
         key=lambda s: -final_confidence.get(s, 0),
     )[:5]
 
-    narrative_parts = [
-        f"Consensus across {len(reports)} specialists over {len(sectors)} sectors.",
-        f"Recommended (overweight): {', '.join(recommended) if recommended else '无'}.",
-        f"Vetoed: {', '.join(vetoed) if vetoed else '无'}.",
-        f"Disagreements logged: {len(disagreements)}.",
-    ]
-    if disagreements[:3]:
-        narrative_parts.append("Key disagreements: " + "; ".join(
-            f"{d.sector}({d.resolution})" for d in disagreements[:3]
-        ))
+    lang = inputs.output_language
+    if lang == "zh":
+        none_tag = "无"
+        narrative_parts = [
+            f"{len(reports)} 位专家就 {len(sectors)} 个行业达成共识。",
+            f"建议超配：{', '.join(recommended) if recommended else none_tag}。",
+            f"否决：{', '.join(vetoed) if vetoed else none_tag}。",
+            f"分歧条目：{len(disagreements)}。",
+        ]
+        if disagreements[:3]:
+            narrative_parts.append(
+                "主要分歧："
+                + "; ".join(f"{d.sector}({d.resolution})" for d in disagreements[:3])
+            )
+    else:
+        none_tag = "none"
+        narrative_parts = [
+            f"{len(reports)} specialists reached consensus on {len(sectors)} sectors.",
+            f"Recommended (overweight): {', '.join(recommended) if recommended else none_tag}.",
+            f"Vetoed: {', '.join(vetoed) if vetoed else none_tag}.",
+            f"Disagreements logged: {len(disagreements)}.",
+        ]
+        if disagreements[:3]:
+            narrative_parts.append(
+                "Key disagreements: "
+                + "; ".join(f"{d.sector}({d.resolution})" for d in disagreements[:3])
+            )
 
     return DebateVerdict(
         final_stance_per_sector=final_stance,
@@ -382,6 +454,10 @@ def _resolve_by_self_consistency(
         reason: str
 
     llm = _build_llm(model=model, temperature=0.7).with_structured_output(TinyDecision)
+    lang_hint = (
+        "请用简体中文写 reason 字段。" if inputs.output_language == "zh"
+        else "Write the reason field in English."
+    )
     prompt = f"""Three ETF specialists disagree on sector "{sector}". Decide its final stance.
 
 Specialist votes:
@@ -394,6 +470,7 @@ Market: {inputs.market}
 Client risk: {inputs.client_risk_level or 'N/A'}
 
 Give a final stance among [overweight, neutral, underweight, veto] and a 1-sentence reason.
+{lang_hint}
 """
 
     def invoke(p: str) -> TinyDecision:
