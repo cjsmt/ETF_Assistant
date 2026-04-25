@@ -37,7 +37,11 @@ from agent.patterns.reasoning import self_consistency_vote
 
 # ----------------------------- Specialist prompts -----------------------------
 
-QUANT_SYSTEM = """You are the QUANT specialist in a multi-agent ETF advisory debate.
+# Base (language-neutral) system prompts. A locale-specific language-instruction
+# block is appended at invocation time, so the same model can serve both
+# English- and Chinese-speaking users without prompt duplication.
+
+QUANT_SYSTEM_BASE = """You are the QUANT specialist in a multi-agent ETF advisory debate.
 
 You only look at QUANTITATIVE evidence: factor scores and the four-quadrant
 classification.
@@ -60,11 +64,9 @@ Rules:
 - Cite factor numbers verbatim in evidences (e.g., "ma_score=2, momentum=0.18").
 - If a factor is truly missing, say so in caveats. Do NOT add caveats about consensus_score being constant (this is already known and documented above).
 
-Output language: **Always write summary, rationale and caveats in Simplified Chinese (简体中文)**, even though these instructions are in English. Sector names must stay in Chinese exactly as given.
-
 Return your output as a structured AgentReport with role='quant'."""
 
-MACRO_SYSTEM = """You are the MACRO specialist in a multi-agent ETF advisory debate.
+MACRO_SYSTEM_BASE = """You are the MACRO specialist in a multi-agent ETF advisory debate.
 
 You look at MACRO + NEWS evidence in the following priority:
 1. Macro events block (may contain sub-sections: 国内宏观快讯 / 宏观主题新闻 / 全球财经新闻)
@@ -88,11 +90,9 @@ Voting rules:
   snippet as evidence.
 - Cite news/snippet content (with a short direct quote) in each vote's evidences.
 
-Output language: **Always write summary, rationale and caveats in Simplified Chinese (简体中文)**. Sector names stay in Chinese as given.
-
 Return your output as a structured AgentReport with role='macro'."""
 
-RISK_SYSTEM = """You are the RISK specialist in a multi-agent ETF advisory debate.
+RISK_SYSTEM_BASE = """You are the RISK specialist in a multi-agent ETF advisory debate.
 
 You only look at RISK evidence: the IC overlay negative list, ETF liquidity
 and scale thresholds, drawdown limits, and the client's risk level.
@@ -104,12 +104,10 @@ Rules:
 - Cite the specific rule ID / threshold violated in evidences.
 - For RM tasks, adjust veto severity by client_risk_level (R1/R2 stricter).
 
-Output language: **Always write summary, rationale and caveats in Simplified Chinese (简体中文)**. Sector names stay in Chinese as given.
-
 Return your output as a structured AgentReport with role='risk'."""
 
 
-COORDINATOR_SYSTEM = """You are the COORDINATOR of a multi-agent ETF advisory debate.
+COORDINATOR_SYSTEM_BASE = """You are the COORDINATOR of a multi-agent ETF advisory debate.
 
 You receive three structured reports from specialists (Quant, Macro, Risk) and
 must produce a fused DebateVerdict.
@@ -127,9 +125,35 @@ Aggregation rules:
 6. Write a plain-language ``narrative`` describing the aggregate view, calling
    out disagreements.
 
-Output language: **Write the narrative in Simplified Chinese (简体中文)**. Sector names and labels stay in Chinese as given.
-
 Output a single DebateVerdict."""
+
+
+_LANG_INSTRUCTIONS = {
+    "en": (
+        "Output language: Write the summary, rationale, caveats and narrative "
+        "in clear professional English. Sector names may stay in their original "
+        "Chinese form (they are domain-specific codes)."
+    ),
+    "zh": (
+        "Output language: 使用简体中文撰写 summary、rationale、caveats 与 narrative。"
+        "行业名保持原始中文。"
+    ),
+}
+
+
+def _with_lang(base_prompt: str, lang: str) -> str:
+    """Append the locale-specific output-language block to a base prompt."""
+    instr = _LANG_INSTRUCTIONS.get(lang, _LANG_INSTRUCTIONS["en"])
+    return f"{base_prompt}\n\n{instr}"
+
+
+# Back-compat aliases — default to English so accidental callers (older code,
+# notebooks, tests) produce English output rather than silently falling back
+# to Chinese. Locale-aware code should build prompts via ``_with_lang``.
+QUANT_SYSTEM       = _with_lang(QUANT_SYSTEM_BASE,       "en")
+MACRO_SYSTEM       = _with_lang(MACRO_SYSTEM_BASE,       "en")
+RISK_SYSTEM        = _with_lang(RISK_SYSTEM_BASE,        "en")
+COORDINATOR_SYSTEM = _with_lang(COORDINATOR_SYSTEM_BASE, "en")
 
 
 # ------------------------------ Specialist LLMs -------------------------------
@@ -147,6 +171,7 @@ class DebateInputs:
     news_text: str = ""
     client_risk_level: Optional[str] = None
     user_question: str = ""
+    output_language: str = "en"  # "en" | "zh" — follows UI language
 
 
 def _build_llm(model: str | None = None, temperature: float = 0.2) -> ChatOpenAI:
@@ -156,7 +181,7 @@ def _build_llm(model: str | None = None, temperature: float = 0.2) -> ChatOpenAI
 
 def _invoke_specialist(
     role: AgentRole,
-    system_prompt: str,
+    base_prompt: str,
     inputs: DebateInputs,
     model: str | None,
     thread_id: str,
@@ -168,6 +193,7 @@ def _invoke_specialist(
         f"specialist_{role.value}",
         "spawn",
     )
+    system_prompt = _with_lang(base_prompt, inputs.output_language)
     llm = _build_llm(model=model, temperature=0.2).with_structured_output(AgentReport)
 
     shared_context = f"""Market: {inputs.market}
@@ -223,9 +249,9 @@ def run_debate_parallel(
     )
 
     tasks = [
-        (AgentRole.QUANT, QUANT_SYSTEM),
-        (AgentRole.MACRO, MACRO_SYSTEM),
-        (AgentRole.RISK,  RISK_SYSTEM),
+        (AgentRole.QUANT, QUANT_SYSTEM_BASE),
+        (AgentRole.MACRO, MACRO_SYSTEM_BASE),
+        (AgentRole.RISK,  RISK_SYSTEM_BASE),
     ]
     reports: dict[AgentRole, AgentReport] = {}
     with _futures.ThreadPoolExecutor(max_workers=3) as pool:
@@ -371,16 +397,33 @@ def _aggregate(
         key=lambda s: -final_confidence.get(s, 0),
     )[:5]
 
-    narrative_parts = [
-        f"Consensus across {len(reports)} specialists over {len(sectors)} sectors.",
-        f"Recommended (overweight): {', '.join(recommended) if recommended else '无'}.",
-        f"Vetoed: {', '.join(vetoed) if vetoed else '无'}.",
-        f"Disagreements logged: {len(disagreements)}.",
-    ]
-    if disagreements[:3]:
-        narrative_parts.append("Key disagreements: " + "; ".join(
-            f"{d.sector}({d.resolution})" for d in disagreements[:3]
-        ))
+    lang = inputs.output_language
+    if lang == "zh":
+        none_tag = "无"
+        narrative_parts = [
+            f"{len(reports)} 位专家就 {len(sectors)} 个行业达成共识。",
+            f"建议超配：{', '.join(recommended) if recommended else none_tag}。",
+            f"否决：{', '.join(vetoed) if vetoed else none_tag}。",
+            f"分歧条目：{len(disagreements)}。",
+        ]
+        if disagreements[:3]:
+            narrative_parts.append(
+                "主要分歧："
+                + "; ".join(f"{d.sector}({d.resolution})" for d in disagreements[:3])
+            )
+    else:
+        none_tag = "none"
+        narrative_parts = [
+            f"{len(reports)} specialists reached consensus on {len(sectors)} sectors.",
+            f"Recommended (overweight): {', '.join(recommended) if recommended else none_tag}.",
+            f"Vetoed: {', '.join(vetoed) if vetoed else none_tag}.",
+            f"Disagreements logged: {len(disagreements)}.",
+        ]
+        if disagreements[:3]:
+            narrative_parts.append(
+                "Key disagreements: "
+                + "; ".join(f"{d.sector}({d.resolution})" for d in disagreements[:3])
+            )
 
     return DebateVerdict(
         final_stance_per_sector=final_stance,
@@ -411,6 +454,10 @@ def _resolve_by_self_consistency(
         reason: str
 
     llm = _build_llm(model=model, temperature=0.7).with_structured_output(TinyDecision)
+    lang_hint = (
+        "请用简体中文写 reason 字段。" if inputs.output_language == "zh"
+        else "Write the reason field in English."
+    )
     prompt = f"""Three ETF specialists disagree on sector "{sector}". Decide its final stance.
 
 Specialist votes:
@@ -423,6 +470,7 @@ Market: {inputs.market}
 Client risk: {inputs.client_risk_level or 'N/A'}
 
 Give a final stance among [overweight, neutral, underweight, veto] and a 1-sentence reason.
+{lang_hint}
 """
 
     def invoke(p: str) -> TinyDecision:

@@ -27,6 +27,7 @@ class AgentState(TypedDict, total=False):
 
     # --- New A+ pattern fields ---
     thread_id: str                       # for pattern log, memory, resource tracker
+    output_language: str                 # "en" | "zh" — follows UI language from the frontend
 
     # Pattern 11: Goal Setting & Monitoring
     goal_state: dict                     # serialised GoalState

@@ -9,7 +9,7 @@ import streamlit as st
 from agent.patterns.multi_agent import DebateInputs, run_debate_parallel
 from agent.patterns.pattern_log import PATTERN_LOG
 from agent.subgraph import calc_factors_df, score_quadrant_df, _summarize_quadrants
-from frontend.i18n import t
+from frontend.i18n import current_lang, t
 from tools.filter_tools import get_ic_overlay_config
 
 st.title(t("debate.title"))
@@ -49,16 +49,18 @@ if run_btn:
         overlay = get_ic_overlay_config.invoke({"market": market})
 
     with st.spinner(t("debate.spinner.parallel")):
+        lang = current_lang()
         inputs = DebateInputs(
             market=market,
             factor_summary=factor_summary,
             quadrant_summary=quadrant_summary,
             observation_pool=overlay,
-            veto_list_text="见 overlay",
+            veto_list_text="see overlay" if lang == "en" else "见 overlay",
             macro_events="",
             news_text="",
             client_risk_level=None if risk == "N/A" else risk,
             user_question=user_q,
+            output_language=lang,
         )
         result = run_debate_parallel(inputs, thread_id="debate_page")
 

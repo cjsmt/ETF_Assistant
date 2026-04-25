@@ -784,6 +784,7 @@ def multi_agent_debate_node(state: AgentState):
 
     _log_step("multi_agent_debate", 3, 4, "运行 Quant/Macro/Risk 三 Agent（并行）")
     user_question = state.get("user_input", "")
+    output_lang = state.get("output_language") or "en"
     debate_inputs = DebateInputs(
         market=market,
         factor_summary=factor_summary,
@@ -794,6 +795,7 @@ def multi_agent_debate_node(state: AgentState):
         news_text=news_text,
         client_risk_level=state.get("client_risk_level"),
         user_question=user_question,
+        output_language=output_lang,
     )
     model = os.getenv("OPENAI_MODEL", "deepseek-v3.2")
     debate_result = run_debate_parallel(

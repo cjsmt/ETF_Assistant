@@ -616,9 +616,16 @@ def run_agent(
     verbose: bool = True,
     client_risk_level: str | None = None,
     return_state: bool = False,
+    output_language: str = "en",
 ):
     """Run the agent. Returns either the final string, or the full final state when
-    ``return_state=True`` (used by the Streamlit frontend for pattern panels)."""
+    ``return_state=True`` (used by the Streamlit frontend for pattern panels).
+
+    ``output_language`` ("en" | "zh") is plumbed through state so downstream
+    nodes (notably the Multi-Agent Debate specialists) can respect the UI
+    language. Defaults to English to keep the CLI/professor-facing behaviour
+    predictable; the Streamlit pages pass ``current_lang()`` explicitly.
+    """
     RESOURCE_TRACKER.reset(thread_id)
     PATTERN_LOG.clear(thread_id)
 
@@ -645,6 +652,7 @@ def run_agent(
         "task_payload": {},
         "latest_trace_path": "",
         "thread_id": thread_id,
+        "output_language": output_language if output_language in {"en", "zh"} else "en",
         "goal_state": {},
         "goal_progress": 0.0,
         "input_guardrail": {},
